@@ -1,0 +1,347 @@
+/* Cat SAT — same dark language as the desktop build, rendered by the browser. */
+:root{
+  --bg:#0F1017; --surface:#1A1B26; --surface2:#232536; --surface3:#12131C;
+  --border:#2A2D42; --hairline:rgba(255,255,255,.055);
+  --track:rgba(255,255,255,.07);          /* visible on every surface we use */
+  --text:#E8ECF1; --dim:#98A2B3; --faint:#6B7280;
+  --green:#2ECC71; --green-dk:#27AE60; --blue:#3B82F6; --blue-dk:#2563EB;
+  --purple:#8E44AD; --amber:#F1C40F; --orange:#E67E22; --red:#E74C3C;
+  --slate:#34495E;
+  --easy:#2ECC71; --medium:#F1C40F; --hard:#E74C3C;
+  --radius:14px; --gap:16px;
+  --column:min(980px,100%);               /* the quiz reading column */
+}
+*{box-sizing:border-box;margin:0;padding:0}
+html,body{height:100%}
+body{
+  background:var(--bg); color:var(--text);
+  font:14px/1.5 Inter,"Segoe UI",system-ui,-apple-system,sans-serif;
+  overflow:hidden;                 /* the app scrolls its panes, not the page */
+  -webkit-font-smoothing:antialiased;
+}
+button{font:inherit;color:inherit;border:0;background:none;cursor:pointer}
+input,textarea,select{font:inherit;color:inherit}
+img{display:block;max-width:100%}
+
+/* One focus ring for the whole app, only for keyboard users. Without this,
+   tabbing through the app gave no visible indication of where you were. */
+:focus{outline:none}
+:focus-visible{outline:2px solid var(--blue);outline-offset:2px;border-radius:6px}
+
+/* Dark scrollbars. A default light scrollbar on a dark app is the single most
+   obvious "unfinished" tell. */
+*{scrollbar-width:thin;scrollbar-color:#3A3E58 transparent}
+::-webkit-scrollbar{width:11px;height:11px}
+::-webkit-scrollbar-track{background:transparent}
+::-webkit-scrollbar-thumb{background:#3A3E58;border-radius:8px;border:3px solid transparent;background-clip:content-box}
+::-webkit-scrollbar-thumb:hover{background:#4A4F70;background-clip:content-box}
+
+@media (prefers-reduced-motion:reduce){
+  *,*::before,*::after{animation-duration:.01ms !important;transition-duration:.01ms !important}
+}
+
+/* ---------------------------------------------------------------- layout */
+#app{display:flex;flex-direction:column;height:100vh}
+.topbar{
+  display:flex;align-items:center;gap:8px;padding:10px 20px;
+  border-bottom:1px solid var(--border);background:var(--surface);flex:0 0 auto;
+}
+.brand{display:flex;align-items:center;gap:10px;font-weight:700;font-size:17px;margin-right:12px}
+.brand span{font-size:22px}
+.nav{display:flex;gap:4px;flex-wrap:wrap}
+.nav button{
+  padding:8px 14px;border-radius:9px;color:var(--dim);font-weight:600;font-size:13px;
+  transition:background .12s,color .12s;
+}
+.nav button:hover{background:var(--surface2);color:var(--text)}
+.nav button.on{background:var(--blue);color:#fff}
+.spacer{flex:1}
+.screen{flex:1;overflow-y:auto;overflow-x:hidden;padding:22px 24px 44px;scroll-behavior:auto}
+.screen.flush{padding:0}
+h1{font-size:24px;font-weight:700;margin-bottom:2px;letter-spacing:-.01em}
+h2{font-size:17px;font-weight:700;margin-bottom:8px;letter-spacing:-.005em}
+h3{font-size:14px;font-weight:700;margin-bottom:6px}
+.sub{color:var(--dim);font-size:13px}
+.faint{color:var(--faint);font-size:12px}
+/* Screen headers all align the same way: title block left, controls right,
+   both sitting on the same top edge. */
+.head{display:flex;align-items:flex-start;gap:12px;margin-bottom:16px;flex-wrap:wrap}
+.head .spacer{flex:1}
+.head .row.tight{align-items:center}
+
+/* ----------------------------------------------------------------- cards */
+.card{
+  background:var(--surface);border:1px solid var(--hairline);
+  border-radius:var(--radius);padding:18px 20px;margin-bottom:14px;
+}
+.card.tight{padding:14px 16px}
+.card.sunken{background:var(--surface2)}
+.card>h2:first-child{margin-bottom:10px}
+.grid{display:grid;gap:12px}
+/* align-items:start so a short card next to a tall one sizes to its content
+   instead of stretching into a half-empty box. */
+.grid.c2{grid-template-columns:repeat(auto-fit,minmax(320px,1fr));align-items:start}
+/* Stat strips pack from the left at a readable fixed width rather than
+   stretching two tiles across 1300px with a canyon between them. */
+.grid.c3{grid-template-columns:repeat(auto-fit,minmax(200px,260px));justify-content:start}
+.grid.c4{grid-template-columns:repeat(auto-fit,minmax(180px,1fr))}
+.row{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+.row.tight{gap:6px}
+.col{display:flex;flex-direction:column;gap:6px}
+
+/* ----------------------------------------------------------------- tiles */
+/* max-width stops a lone tile in an auto-fit grid from stretching to 1300px
+   with its content stranded on the left. */
+.tile{background:var(--surface);border:1px solid var(--hairline);border-radius:12px;
+      padding:14px 16px;max-width:520px}
+.card .tile{background:var(--surface2);border-color:transparent}
+.tile .label{font-size:10px;letter-spacing:.06em;text-transform:uppercase;color:var(--faint);font-weight:700}
+.tile .value{font-size:25px;font-weight:700;line-height:1.2;margin-top:2px;font-variant-numeric:tabular-nums}
+.tile .note{font-size:11px;color:var(--faint);margin-top:3px}
+
+/* --------------------------------------------------------------- buttons */
+.btn{
+  display:inline-flex;align-items:center;justify-content:center;gap:7px;
+  padding:10px 16px;border-radius:10px;font-weight:700;font-size:13px;
+  background:var(--surface2);color:var(--text);
+  transition:background .12s,transform .06s,filter .12s;white-space:nowrap;
+}
+.btn:hover{background:var(--slate)}
+.btn:active{transform:translateY(1px)}
+.btn.primary{background:var(--green);color:#0B1F14}
+.btn.primary:hover{background:var(--green-dk)}
+.btn.blue{background:var(--blue);color:#fff}
+.btn.blue:hover{background:var(--blue-dk)}
+.btn.purple{background:var(--purple);color:#fff}
+.btn.amber{background:var(--amber);color:#1A1206}
+.btn.danger{background:var(--red);color:#fff}
+.btn.ghost{background:transparent;border:1px solid var(--border);color:var(--dim)}
+.btn.ghost:hover{background:var(--surface2);color:var(--text)}
+.btn.on{background:var(--blue);color:#fff}
+.btn.sm{padding:6px 11px;font-size:12px;border-radius:8px}
+.btn.lg{padding:14px 22px;font-size:15px}
+.btn.block{width:100%}
+.btn[disabled]{opacity:.45;pointer-events:none}
+
+/* ----------------------------------------------------------------- pills */
+.pill{display:inline-block;padding:3px 10px;border-radius:20px;background:var(--surface2);
+      font-size:11px;font-weight:700;white-space:nowrap}
+.pill.easy{color:var(--easy)} .pill.medium{color:var(--medium)} .pill.hard{color:var(--hard)}
+.pill.green{color:var(--green)} .pill.blue{color:var(--blue)} .pill.orange{color:var(--orange)}
+.pill.red{color:var(--red)} .pill.purple{color:var(--purple)} .pill.faint{color:var(--faint)}
+
+/* ------------------------------------------------------------------ bars */
+/* The track used to be --surface3, which is almost exactly the card colour —
+   so bars looked like floating stubs with nothing behind them. */
+.bar{height:8px;border-radius:5px;background:var(--track);overflow:hidden;margin-top:5px;
+     position:relative}
+.bar>i{display:block;height:100%;border-radius:5px;transition:width .25s}
+
+/* Confidence band + tick. The band spans the whole plausible accuracy range,
+   so a domain measured on 7 questions LOOKS as vague as it is instead of
+   printing a confident-looking 71%. */
+.bar>i.ciband{position:absolute;top:0;height:100%;opacity:.34;transition:left .25s,width .25s}
+/* Kept inside the track — .bar clips, so a tick that overhangs just vanishes. */
+.bar>i.citick{position:absolute;top:0;height:100%;width:3px;border-radius:2px;
+              margin-left:-1.5px;transition:left .25s}
+.bar.ci-noise>i.ciband{opacity:.22}
+.bar.ci-solid>i.ciband{opacity:.45}
+
+.barrow{margin-bottom:11px}
+.barrow:last-child{margin-bottom:0}
+.barrow .top{display:flex;justify-content:space-between;font-size:12px;font-weight:600;gap:10px}
+.barrow .top span:last-child{font-variant-numeric:tabular-nums}
+/* Tap-to-reveal used by the review screen's practice mode. */
+.revealwrap{display:inline-flex;align-items:center}
+.btn.reveal{background:var(--surface3);border:1px dashed var(--border);color:var(--dim);
+            font-size:11px;letter-spacing:.02em;padding:3px 9px}
+.btn.reveal:hover{color:var(--text);border-style:solid}
+
+.barrow .cirange{color:var(--faint);font-weight:600;font-size:11px}
+.barrow.lvl-noise .top>span:first-child{color:var(--dim)}
+
+/* The official score-report band, shown under the practice bar it outranks. */
+.barrow .official{display:flex;flex-wrap:wrap;align-items:baseline;gap:8px;
+                  margin-top:5px;font-size:11px;line-height:1.45}
+.barrow .official .oband{font-weight:700;font-variant-numeric:tabular-nums}
+.barrow .official .overdict{color:var(--dim)}
+.barrow .official .oflag{color:var(--orange);font-weight:700}
+
+/* ---------------------------------------------------------------- inputs */
+.field{display:flex;flex-direction:column;gap:5px;margin-bottom:14px}
+.field>label{font-size:10px;letter-spacing:.06em;text-transform:uppercase;color:var(--faint);font-weight:700}
+input[type=text],input[type=number],select,textarea{
+  background:var(--surface3);border:1px solid var(--border);border-radius:9px;
+  padding:10px 12px;font-size:13px;width:100%;
+}
+input:focus,select:focus,textarea:focus{outline:2px solid var(--blue);outline-offset:-1px}
+.seg{display:flex;background:var(--surface3);border-radius:10px;padding:3px;gap:3px}
+.seg button{flex:1;padding:8px;border-radius:8px;font-weight:700;font-size:13px;color:var(--dim);
+            transition:background .12s,color .12s}
+.seg button:hover{color:var(--text)}
+.seg button.on{background:var(--green);color:#0B1F14}
+.seg.blue button.on{background:var(--blue);color:#fff}
+.check{display:flex;align-items:center;gap:9px;padding:7px 0;cursor:pointer;font-size:13px}
+.check input{width:17px;height:17px;accent-color:var(--blue);cursor:pointer}
+.chiplist{display:flex;flex-wrap:wrap;gap:6px}
+/* Cause chips sit inside .item, which is the same colour a .btn defaults to —
+   so they rendered as a run-on line of bare words. Give them their own surface. */
+.chiplist .btn{background:var(--surface3);border:1px solid var(--border);color:var(--dim)}
+.chiplist .btn:hover{background:var(--slate);color:var(--text);border-color:var(--slate)}
+.chiplist .btn.on{background:var(--blue);border-color:var(--blue);color:#fff}
+/* A text input inside a .row should share the line with its button, not claim
+   100% width and push the button onto the next line. */
+.row>input[type=text]{flex:1 1 240px;width:auto}
+
+/* ------------------------------------------------------------------ quiz */
+.quiz{display:flex;flex-direction:column;height:100%;background:var(--surface)}
+.quizbar{display:flex;align-items:center;gap:10px;padding:12px 20px;flex:0 0 auto;flex-wrap:wrap}
+.quizbar .ctx{font-weight:700;font-size:16px}
+.quizbar .faint{color:var(--dim);font-size:12.5px}   /* "Question 3 of 27" needs to be readable */
+/* Taller, with a visible track — it was a 4px stub that read as an artefact. */
+.progress{height:5px;background:var(--track);flex:0 0 auto}
+.progress>i{display:block;height:100%;background:var(--blue);transition:width .2s}
+/* Centring is done with `margin:auto` on the image, NOT with align-items /
+   justify-content on this container.
+   Why it matters: when a flex child is TALLER than its scrolling parent,
+   `align-items:center` pushes the child's top edge above the scroll origin —
+   and a browser will not scroll above scrollTop 0. The first several hundred
+   pixels of a long passage become permanently unreachable. A two-passage or
+   long-poem question loses its opening lines and reads as if it started
+   mid-sentence.
+   `margin:auto` centres a short question exactly the same way, but collapses
+   to zero when the child overflows, so a tall one starts at the top and
+   scrolls all the way through. */
+.qwrap{flex:1;overflow-y:auto;padding:18px 20px;background:var(--surface3);
+       border-bottom:1px solid var(--border);display:flex}
+.qwrap img{border-radius:8px;background:#fff;max-width:min(940px,100%);height:auto;
+           margin:auto}
+.qwrap .qmissing{margin:auto}
+.qmissing{color:var(--faint);padding:60px;text-align:center}
+/* Everything below the question shares the question's column, so the answers
+   line up under the thing they answer instead of spanning the whole window. */
+.answers,.hint,.quiznav{width:var(--column);margin-left:auto;margin-right:auto}
+.answers{flex:0 0 auto;padding:14px 20px 6px}
+.choices{display:grid;grid-template-columns:1fr 1fr;gap:9px}
+.choice{
+  display:flex;align-items:center;gap:12px;padding:13px 16px;border-radius:10px;
+  background:var(--surface2);font-weight:700;font-size:15px;text-align:left;
+  border:1px solid transparent;transition:background .1s,border-color .1s;
+}
+.choice:hover{background:var(--slate)}
+.choice.sel{background:var(--blue);color:#fff;border-color:#7FB0FF}
+.choice.out{background:var(--surface3);color:var(--faint);text-decoration:line-through}
+.gridin{padding:4px 0}
+.quiznav{display:flex;align-items:center;gap:10px;padding:10px 20px 18px;flex:0 0 auto}
+.hint{text-align:center;font-size:11px;color:var(--faint);padding:2px 0 6px}
+.timer{padding:7px 13px;border-radius:8px;background:var(--surface2);font-weight:700;
+       font-size:14px;color:var(--amber);cursor:pointer;font-variant-numeric:tabular-nums}
+.timer.warn{color:var(--orange)} .timer.crit{color:var(--red)}
+/* Grouped zoom control — two bare ± buttons floating next to the index button
+   read as debug leftovers. */
+.zoomer{display:inline-flex;align-items:center;gap:2px;background:var(--surface3);
+        border-radius:9px;padding:3px}
+.zoomer button{width:28px;height:26px;border-radius:7px;color:var(--dim);font-weight:700;
+               transition:background .12s,color .12s}
+.zoomer button:hover{background:var(--surface2);color:var(--text)}
+.zoomer .faint{padding:0 4px;font-size:10px;letter-spacing:.05em;text-transform:uppercase}
+
+/* ----------------------------------------------------------------- modal */
+.modal{position:fixed;inset:0;background:rgba(6,7,12,.72);display:flex;
+       align-items:center;justify-content:center;padding:24px;z-index:50}
+.modal .box{background:var(--surface);border:1px solid var(--border);border-radius:16px;
+            max-width:960px;width:100%;max-height:88vh;display:flex;flex-direction:column;
+            box-shadow:0 24px 70px rgba(0,0,0,.55)}
+.modal .box header{padding:16px 20px;border-bottom:1px solid var(--border);
+                   display:flex;align-items:center;gap:10px}
+.modal .box header h2{margin-bottom:0}
+.modal .box .body{padding:18px 20px;overflow-y:auto}
+.modal .box footer{padding:12px 20px;border-top:1px solid var(--border);display:flex;
+                   justify-content:flex-end;gap:8px}
+
+/* ------------------------------------------------------------------ misc */
+.list{display:flex;flex-direction:column;gap:8px}
+.item{background:var(--surface2);border-radius:11px;padding:13px 15px}
+.item.done{background:var(--surface3);color:var(--faint)}
+/* Fixed-width minute slot: every task title now starts on the same vertical
+   line whether the task is "5 min" or "180 min". */
+.mins{flex:0 0 58px;text-align:right;font-size:11px;font-weight:700;color:var(--faint)}
+.item .detail{margin-top:5px;margin-left:96px;font-size:12px;color:var(--dim)}
+.tick{width:26px;height:26px;border-radius:50%;background:transparent;
+      border:2px solid var(--border);color:var(--faint);font-weight:700;font-size:13px;
+      flex:0 0 auto;display:inline-flex;align-items:center;justify-content:center;
+      transition:background .12s,border-color .12s,color .12s}
+.tick:hover{border-color:var(--green)}
+.tick.on{background:var(--green);border-color:var(--green);color:#0B1F14}
+.empty{text-align:center;padding:56px 20px;color:var(--dim)}
+.empty .icon{font-size:42px;margin-bottom:10px}
+.toast{position:fixed;left:50%;bottom:26px;transform:translateX(-50%);
+       background:var(--surface2);border:1px solid var(--border);padding:11px 18px;
+       border-radius:10px;font-size:13px;z-index:60;box-shadow:0 8px 26px rgba(0,0,0,.5)}
+.toast.err{border-color:var(--red);color:#FFD9D4}
+.spin{width:22px;height:22px;border:3px solid var(--surface2);border-top-color:var(--blue);
+      border-radius:50%;animation:sp .7s linear infinite;margin:40px auto}
+@keyframes sp{to{transform:rotate(360deg)}}
+.trend{width:100%;height:210px}
+details>summary{cursor:pointer;list-style:none;color:var(--dim);font-size:12px;
+                font-weight:700;padding:6px 0}
+details>summary::-webkit-details-marker{display:none}
+details>summary:hover{color:var(--text)}
+details[open]>summary{color:var(--text)}
+.mono{font-variant-numeric:tabular-nums}
+.wrapish{white-space:pre-wrap;word-break:break-word}
+
+/* -------------------------------------------------------------- calendar */
+.calgrid{display:grid;grid-template-columns:repeat(7,1fr);gap:6px}
+.calgrid.calhead{margin-bottom:6px}
+.calgrid.calhead>div{text-align:center;font-size:11px;font-weight:700;letter-spacing:.05em}
+.calday{
+  min-height:66px;background:var(--surface2);border-radius:9px;padding:6px 8px;
+  display:flex;flex-direction:column;align-items:stretch;gap:2px;text-align:left;
+  transition:background .12s,outline-color .12s;outline:2px solid transparent;
+  overflow:hidden;
+}
+.calday:hover{background:var(--slate)}
+/* Days outside the seven-week plan are context, not content. */
+.calday:not(.inplan){background:var(--surface3);color:var(--faint)}
+.calday.out{opacity:.3}
+.calday.today{outline-color:var(--blue);background:#1B2540}
+.calday.test{background:#2A1A1E}
+.calrow{display:flex;align-items:baseline;justify-content:space-between;gap:4px}
+.calnum{font-weight:700;font-size:14px;font-variant-numeric:tabular-nums}
+.calweek{font-size:9px;font-weight:700;color:var(--faint);letter-spacing:.04em}
+.caltag{font-size:9.5px;font-weight:700;line-height:1.25;word-break:break-word}
+.caltag.is-test{color:var(--red)}
+.caltag.is-mile{color:var(--amber)}
+.calfoot{margin-top:auto;display:flex;align-items:center;gap:5px}
+.calbar{flex:1;height:4px;border-radius:3px;background:var(--track);overflow:hidden}
+.calbar>i{display:block;height:100%;border-radius:3px}
+.caldot{font-size:9px;color:var(--blue);font-weight:700;font-variant-numeric:tabular-nums}
+
+/* ------------------------------------------------------------ first run */
+/* The drop target has to read as "put things here" at a glance — this is the
+   first screen a new user ever sees, and the thing it replaces was a terminal
+   command they had no way to run. */
+.dropzone{
+  border:2px dashed var(--border); border-radius:var(--radius);
+  padding:34px 20px; text-align:center; cursor:pointer; background:var(--surface3);
+  transition:border-color .15s, background .15s, transform .08s;
+}
+.dropzone:hover{border-color:var(--blue); background:var(--surface2)}
+.dropzone.over{border-color:var(--green); background:rgba(46,204,113,.08); transform:scale(1.01)}
+.dropzone .dzicon{font-size:34px; line-height:1; margin-bottom:8px}
+.dropzone .dztitle{font-size:15px; font-weight:700; margin-bottom:4px}
+.dropzone p{max-width:46ch; margin:0 auto}
+
+/* A moving stripe for work whose total is genuinely unknown. Honest: it says
+   "something is happening" without inventing a percentage. */
+.bar.indeterminate{overflow:hidden;position:relative}
+.bar.indeterminate>i{
+  position:absolute;left:0;top:0;height:100%;width:38%;border-radius:5px;
+  background:linear-gradient(90deg,transparent,var(--green),transparent);
+  animation:barslide 1.25s ease-in-out infinite;
+}
+@keyframes barslide{0%{left:-40%}100%{left:100%}}
+@media (prefers-reduced-motion:reduce){
+  .bar.indeterminate>i{animation:none;left:0;width:100%;opacity:.4}
+}

@@ -1,0 +1,95 @@
+# ---------------------------------------------------------------------------
+# COLLEGE BOARD CONTENT — never commit any of this.
+#
+# The app ships no question content. Every user imports their own PDF exports
+# from the official SAT Suite Question Bank. Nothing below belongs in git, and
+# once something is committed it stays in the history forever even if you
+# delete it later — so this file matters more than any other file here.
+# ---------------------------------------------------------------------------
+
+# The question bank, the extracted images, and the source PDFs
+Cat Sat/database/
+Cat Sat/images/
+Cat Sat/pdfs/
+database/
+images/
+pdfs/
+
+# SQLite in every form it takes. NOTE: "*.db" alone does NOT cover the
+# write-ahead log or shared-memory files, and those can hold real question
+# data. This was a real gap in the first version of this file.
+*.db
+*.db-wal
+*.db-shm
+*.sqlite
+*.sqlite3
+*.sqlite-wal
+*.sqlite-shm
+
+# Any PDF anywhere — the Question Bank exports are PDFs
+*.pdf
+
+# Screenshots must come from the synthetic demo bank AND a synthetic profile.
+# This whitelist once force-included two shots that had been captured on a
+# machine with a real personal_plan.py, so they published a real exam schedule
+# and target score straight into the README. shots.py now seeds its own throwaway
+# profile; regenerate with:
+#     python "Cat Sat/dev_tests/shots.py"
+# and check the plan and calendar shots by eye before committing them.
+Screenshots/*.png
+!Screenshots/demo-*.png
+
+# Test sandbox — rebuilt on every run, must never be committed.
+dev_tests/_sandbox/
+**/dev_tests/_sandbox/
+dev_tests/shots/
+
+# ---------------------------------------------------------------------------
+# Normal ignores
+# ---------------------------------------------------------------------------
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+Cat Sat/dev_tests/_sandbox/
+Cat Sat/dev_tests/shots/
+
+.vscode/
+.idea/
+*.swp
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Your own profile — scores, test dates, name. Never commit this.
+Cat Sat/database/profile.json
+database/profile.json
+profile.json
+
+# ---------------------------------------------------------------------------
+# PERSONAL DATA — never commit any of this.
+# ---------------------------------------------------------------------------
+# A hand-written plan and a profile both contain one real student's test
+# scores, weaknesses and schedule. They are also wrong for anybody else: the
+# app generates a plan from each user's own score report instead.
+Cat Sat/personal_plan.py
+personal_plan.py
+Cat Sat/database/profile.json
+database/profile.json
+profile.json
+
+# The development changelog is written to one person, in the second person.
+Cat Sat/UPGRADES.md
+
+# ---------------------------------------------------------------------------
+# App builds
+# ---------------------------------------------------------------------------
+# PyInstaller output. GitHub Actions rebuilds these on every tag; committing
+# a 100 MB binary to the repo is how a project ends up too big to clone.
+dist/
+build/*.toc
+build/*.pkg
+build/CatPrep/
+*.spec.bak
+"CatPrep Data"/
+CatPrep Data/

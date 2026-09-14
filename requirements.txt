@@ -1,0 +1,14 @@
+# Cat Prep needs exactly two things that are not in Python's standard library.
+#
+#   pip install -r requirements.txt
+#
+# PyMuPDF reads the College Board question-bank PDFs and rasterises each
+# question to an image. Pillow writes those images out and is what the test
+# suite uses to generate its synthetic question bank.
+#
+# Everything else — the web server, the database, the adaptive engine — is
+# standard library. No web framework, no build step, no node_modules. That is
+# deliberate: a study tool you cannot install in March is worthless in March.
+
+PyMuPDF>=1.23
+Pillow>=10.0

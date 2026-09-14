@@ -1,0 +1,257 @@
+# Cat Prep's continuous integration.
+#
+# WHAT RUNS WHEN
+#   every push        -> the `test` job: four suites on Linux, Windows and macOS
+#   "Run workflow"    -> also tries a PyInstaller build, releasing nothing
+#   a tag like v1.1   -> also builds and attaches downloads to a Release
+#
+# Cat Prep ships as SOURCE. Someone installs Python, runs two commands, and the
+# app's own first screen handles the rest. The build half of this file is
+# optional and dormant; the test half is the part that earns its keep, because
+# it is the only way to know the code works on a computer that is not mine.
+#
+# WHY THIS FILE EXISTS AT ALL
+# ---------------------------
+# PyInstaller does not cross-compile. It freezes the Python that is running it,
+# for the operating system AND the chip it is running on, so a Windows machine
+# can only ever produce a Windows build. Making the Mac and Linux downloads
+# yourself would mean owning a Mac and a Linux box. GitHub lends you all of
+# them, for free, on a public repository — that is the entire point here.
+#
+# TO CUT A RELEASE
+#   git tag v1.1
+#   git push origin v1.1
+# Then watch the Actions tab. About 10-20 minutes later the downloads are on
+# your Releases page.
+#
+# You can also run it by hand from the Actions tab ("Run workflow") to test a
+# build without tagging anything.
+
+name: CI
+
+on:
+  push:                    # every push runs the TESTS (see the `test` job)
+  pull_request:
+  workflow_dispatch:       # "Run workflow" in the Actions tab, to try a build
+
+
+
+permissions:
+  contents: write          # needed to attach files to the Release
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # TESTS — the job that actually matters day to day.
+  # ---------------------------------------------------------------------------
+  # Runs on every push, on all three operating systems, because the whole point
+  # of publishing this is that it works on somebody else's computer. Path
+  # handling, file locking and line endings are the three things that behave
+  # differently on Windows and macOS, and all three are things this app does
+  # constantly. There is no way to catch that on one machine.
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Run the test suites
+        shell: bash
+        working-directory: "Cat Sat/dev_tests"
+        run: |
+          for suite in test_engine test_profile test_ui test_full_length; do
+            echo "=== $suite ==="
+            python "$suite.py" || exit 1
+          done
+
+      # Python's standard library owns the name `profile`, and the app's own
+      # module was renamed user_profile so nothing can pick the wrong one. This
+      # catches a NEW file that shadows a stdlib name — the kind of thing that
+      # works everywhere until it doesn't.
+      - name: Check for stdlib name collisions
+        shell: bash
+        run: |
+          python -c "
+          import importlib.util, os, sys
+          clash = []
+          for f in sorted(os.listdir('Cat Sat')):
+              if not f.endswith('.py'): continue
+              spec = importlib.util.find_spec(f[:-3])
+              if spec and spec.origin and 'Cat Sat' not in spec.origin:
+                  clash.append((f, spec.origin))
+          for name, origin in clash:
+              print('COLLISION:', name, 'shadows', origin)
+          sys.exit(1 if clash else 0)
+          "
+
+  # ---------------------------------------------------------------------------
+  # BUILD — optional, and dormant unless you ask for it.
+  # ---------------------------------------------------------------------------
+  # Cat Prep ships as source: you install Python and two packages. This job
+  # exists only if you later decide you want double-clickable downloads as
+  # well. It runs when you push a tag starting with v, or when you press "Run
+  # workflow" in the Actions tab. A normal push never triggers it.
+  build:
+    if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
+    needs: test
+    strategy:
+      fail-fast: false     # one platform failing must not hide the others
+      matrix:
+        include:
+          - os: windows-latest
+            label: windows
+            archive: CatPrep-windows.zip
+          # TWO Mac builds, and this is not belt-and-braces. PyInstaller freezes
+          # for the machine it runs on, and that includes the CHIP. macos-latest
+          # is Apple Silicon, so a build from it will not start on an Intel Mac
+          # — and plenty of school laptops are still Intel. macos-13 is the last
+          # Intel runner GitHub offers.
+          - os: macos-latest
+            label: macos-apple-silicon
+            archive: CatPrep-macos-apple-silicon.zip
+          - os: macos-13
+            label: macos-intel
+            archive: CatPrep-macos-intel.zip
+          - os: ubuntu-latest
+            label: linux
+            archive: CatPrep-linux.zip
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt pyinstaller
+
+      - name: Build
+        run: pyinstaller build/catprep.spec --noconfirm --clean
+
+      # A first-run smoke test. It imports the launcher and asks it where data
+      # would go — enough to catch a missing hidden import, which is the most
+      # common way one of these builds is broken on a platform you cannot test.
+      - name: Smoke test the build
+        shell: bash
+        run: |
+          python -c "
+          import sys, pathlib
+          sys.path.insert(0, 'build'); sys.path.insert(0, 'Cat Sat')
+          import launcher
+          print('data dir would be:', launcher.choose_data_dir())
+          import server, setup_api, web_api, question_repo, models
+          import user_profile, score_report, plan_builder, study_plan
+          import adaptive_engine, test_flow, diagnostic, attempt_repo
+          assert hasattr(user_profile, 'Profile'), 'wrong profile module got bundled'
+          assert adaptive_engine.estimate_section_score(52, 54, 'hard',
+                 'Reading and Writing') == 770, 'scoring model did not load'
+          print('all app modules import cleanly')
+          "
+
+      # Does the thing a stranger will do actually work? Launch the built
+      # binary, wait, and see whether it is serving. Every check above this
+      # runs against the SOURCE; only this one runs the download.
+      - name: Start the built app and check it serves
+        # Skipped on both Mac runners: launching a .app bundle from a
+        # script is different enough that a check written blind would
+        # test the check, not the app.
+        if: ${{ !startsWith(matrix.label, 'macos') }}
+        shell: bash
+        run: |
+          python - <<'EOF'
+          import os, re, subprocess, sys, threading, urllib.request
+          exe = "dist/CatPrep/CatPrep" + (".exe" if sys.platform.startswith("win") else "")
+          # The port is chosen at random by free_port(), so it cannot be guessed.
+          # The launcher prints the URL it picked; read it back out of stdout.
+          proc = subprocess.Popen([exe], env={**os.environ, "CATPREP_NO_BROWSER": "1"},
+                                  stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                                  text=True, bufsize=1)
+          url, log = [], []
+          def watch():
+              for line in proc.stdout:
+                  log.append(line)
+                  print(line, end="")
+                  found = re.search(r"http://[\d.]+:\d+", line)
+                  if found and not url:
+                      url.append(found.group(0))
+          reader = threading.Thread(target=watch, daemon=True); reader.start()
+          reader.join(timeout=60)
+          try:
+              if not url:
+                  print("the app never printed a URL; exit code:", proc.poll())
+                  sys.exit(1)
+              with urllib.request.urlopen(url[0] + "/api/bootstrap", timeout=20) as r:
+                  body = r.read().decode()
+              assert '"bankOk"' in body, body[:200]
+              print(f"the built app served {url[0]} -> HTTP {r.status}, bootstrap OK")
+          finally:
+              proc.terminate()
+          EOF
+
+      - name: Package
+        shell: bash
+        run: |
+          cd dist
+          if [ -d "CatPrep.app" ]; then
+            zip -qry "../${{ matrix.archive }}" "CatPrep.app"
+          else
+            zip -qry "../${{ matrix.archive }}" "CatPrep"
+          fi
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.archive }}
+          path: ${{ matrix.archive }}
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/v')
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: downloads
+          merge-multiple: true
+
+      - name: Attach the builds to the Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: downloads/*.zip
+          body: |
+            Download the one for your computer, unzip it, and open **CatPrep**.
+            No Python, no pip, no terminal.
+
+            * **Windows** — `CatPrep-windows.zip`. Windows will say "unrecognised app":
+              click **More info → Run anyway**. It says that about every program
+              that isn't signed with a paid certificate.
+            * **Mac, 2020 or newer** — `CatPrep-macos-apple-silicon.zip`.
+            * **Mac, older / Intel** — `CatPrep-macos-intel.zip`. Not sure which you
+              have?  → About This Mac. "Apple M1/M2/M3/M4" means Apple Silicon;
+              anything saying Intel means the other one.
+            * Either Mac: the first time, **right-click the app → Open**, then Open
+              again. Same unsigned-app reason as Windows.
+            * **Linux** — `CatPrep-linux.zip`.
+
+            **Don't put the folder in OneDrive, iCloud Drive, Dropbox or Google
+            Drive.** Importing writes thousands of images and the sync client
+            fights it for the disk — measured at ~10 minutes inside OneDrive
+            versus ~3 outside.
+
+            You bring your own questions: export them from the College Board
+            Question Bank **with answers and rationales**, then drag the PDFs
+            onto the app's first screen.
