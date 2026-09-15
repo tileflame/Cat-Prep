@@ -41,6 +41,7 @@ check("bank has rationale + is_open_ended", "rationale" in cols and "is_open_end
 # Simulate the legacy bug: a questions.db made by the OLD database.py.
 legacy = os.path.join(make_fake_bank.SANDBOX, "database", "questions.db")
 bak = legacy + ".bak"
+database.reset_pool()
 os.replace(legacy, bak)
 lc = sqlite3.connect(legacy)
 lc.execute("""CREATE TABLE questions (id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -77,7 +78,7 @@ sessions = attempt_repo.list_sessions()
 check("legacy user_history migrated into a session", len(sessions) == 1 and sessions[0]["attempt_count"] == 2, str(sessions))
 database.init_progress_db()
 check("migration is idempotent", len(attempt_repo.list_sessions()) == 1)
-
+database.reset_pool()
 os.replace(bak, legacy)
 for p in (prog, prog + "-wal", prog + "-shm"):
     if os.path.exists(p):
@@ -174,12 +175,14 @@ check("positions are 1..n", [q.position for q in mm1.questions] == list(range(1,
 
 # Degradation: a bank too thin to satisfy the blueprint must report, not crash.
 print("\n[5] graceful degradation on a thin bank")
+database.reset_pool()
 os.replace(os.path.join(make_fake_bank.SANDBOX, "database", "questions.db"), os.path.join(make_fake_bank.SANDBOX, "database", "full.db"))
 make_fake_bank.build(1, with_images=False, thin_domains=("Expression of Ideas",))
 thin = ae.build_module("Reading and Writing", 1, "baseline", rng=random.Random(3))
 check("thin bank still returns a module", thin.size > 0, str(thin.size))
 check("thin bank reports honest fidelity", 0 < thin.fidelity <= 1.0, str(thin.fidelity))
 check("thin bank has no duplicates", len({q.question_id for q in thin.questions}) == thin.size)
+database.reset_pool()
 os.remove(os.path.join(make_fake_bank.SANDBOX, "database", "questions.db"))
 os.replace(os.path.join(make_fake_bank.SANDBOX, "database", "full.db"), os.path.join(make_fake_bank.SANDBOX, "database", "questions.db"))
 
@@ -191,6 +194,7 @@ empty = ae.build_module("Math", 1, "baseline", rng=random.Random(4))
 check("empty bank returns empty module without raising", empty.size == 0)
 ok_flag, msg = database.question_bank_is_usable()
 check("empty bank reports unusable with a message", not ok_flag and "empty" in msg.lower(), msg)
+database.reset_pool()
 os.remove(os.path.join(make_fake_bank.SANDBOX, "database", "questions.db"))
 os.replace(os.path.join(make_fake_bank.SANDBOX, "database", "full.db"), os.path.join(make_fake_bank.SANDBOX, "database", "questions.db"))
 
