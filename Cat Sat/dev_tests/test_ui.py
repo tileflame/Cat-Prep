@@ -54,7 +54,7 @@ for f in ("database/progress.db", "database/progress.db-wal", "database/progress
 if not os.path.exists(os.path.join(make_fake_bank.SANDBOX, "database", "questions.db")):
     make_fake_bank.build(6)
 
-import attempt_repo, question_repo, test_flow  # noqa: E402
+import attempt_repo, question_repo, test_flow, database # noqa: E402
 from main import SATApp  # noqa: E402
 
 print("\n[1] app boots")
@@ -479,6 +479,7 @@ check("mistake review with no data returns home",
 
 print("\n[16] app with an empty question bank")
 import shutil
+database.reset_pool()
 shutil.move(os.path.join(make_fake_bank.SANDBOX, "database", "questions.db"),
             os.path.join(make_fake_bank.SANDBOX, "database", "full.db"))
 import sqlite3
@@ -491,6 +492,7 @@ if app2:
                 if b.cget("state") == "disabled"]
     check("mode buttons disabled without a bank", len(disabled) >= 3, str(len(disabled)))
     guard("history still reachable with an empty bank", app2.show_history)
+database.reset_pool()
 os.remove(os.path.join(make_fake_bank.SANDBOX, "database", "questions.db"))
 shutil.move(os.path.join(make_fake_bank.SANDBOX, "database", "full.db"),
             os.path.join(make_fake_bank.SANDBOX, "database", "questions.db"))
