@@ -38,7 +38,8 @@ on:
 
 permissions:
   contents: write          # needed to attach files to the Release
-
+env:
+  PYTHONUTF8: "1"
 jobs:
   # ---------------------------------------------------------------------------
   # TESTS — the job that actually matters day to day.
