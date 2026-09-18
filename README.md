@@ -14,17 +14,19 @@ Needs Python 3.10+.
 pip install -r requirements.txt
 python run.py
 ```
-If this requirements.txt file doesn't open and doesn't let you run. You must install it manually.
+If this requirements.txt file doesn't open and doesn't let you run it. You must install it manually.
 
 For Windows, you run this in the terminal:
 
 pip install Pillow
+
 pip install pymupdf
 
 
 If that doesn't work, run these instead:
 
 python -m pip install Pillow
+
 python -m pip install --upgrade pip
 
 For macOS, you run this in the terminal:
@@ -34,11 +36,11 @@ python3 -m pip install pymupdf
 python3 -m pip install Pillow
 
 
-These are requirements beforehand. I'm not sure if you need Python to install it and run the program, but install it just in case. So go on Google and install the latest version. These are requirements for the app, and I understand that it is complicated, but it's a must to keep the project free and open source for everyone.
+These are requirements beforehand. I'm not sure if you need Python to install it and run the program, but install it just in case. So go to Google and install the latest version. These are requirements for the app, and I understand that it is complicated, but it's a must to keep the project free and open source for everyone.
 
-After you meet the requirements, you extract the file and open run.py. After such it's going to ask you to drag the College Board PDFs, and you drag both the math and the reading. These are free and are on the College Board official website. A big important note is that you need atleast 1Gb to run this program locally. I couldn't bypass the problem of storing and distributing the College Board questions locally, so instead I made it so you run the program locally in your own domain instead. It does cause a memory issue, but soon when I am in college I'll make one with my own questions with a team. 
+After you meet the requirements, you extract the file and open run.py. After such it's going to ask you to drag the College Board PDFs, and you drag both the math and the reading. These are free and are on the College Board official website. A big important note is that you need atleast 1Gb to run this program locally. I couldn't bypass the problem of storing and distributing the College Board questions locally, so instead I made it so you run the program locally in your own domain instead. It does cause a memory issue, but soon when I am in college, I'll make one with my own questions with a team. 
 
-But for now, after you import the questions. It'll take around 3-10 minutes, and then boom, you have the app. After that, you can put the setup_profile and put a previous test that you took to make a guide day-by-day to help you study.
+But for now, after you import the questions. It'll take around 3-10 minutes, and then boom, you have the app. After that, you can set up your profile and upload a previous test that you took to make a day-by-day guide to help you study.
 
 That's the whole explanation of how it works. It scaled up from a small project to help me organize my questions and answers to this, where everybody can use it as open source. I want to work at big tech, and this is my first large-scale project. Again, I must admit that AI was extensively used, but still the core idea and project is me, a human.
 
