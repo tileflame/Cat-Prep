@@ -204,7 +204,14 @@ jobs:
               proc.terminate()
           EOF
 
-      - name: Package
+           - name: Package Windows
+            if: runner.os == 'Windows'
+            shell: pwsh
+            run: |
+             Compress-Archive -Path "dist/CatPrep" -DestinationPath "${{ matrix.archive }}" -Force
+
+      - name: Package Mac/Linux
+        if: runner.os != 'Windows'
         shell: bash
         run: |
           cd dist
