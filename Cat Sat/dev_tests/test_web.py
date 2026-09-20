@@ -2,7 +2,7 @@
 End-to-end tests for the web UI, driven by REAL Chromium via Playwright.
 
 Unlike the CustomTkinter shim tests, this renders actual pixels and measures
-actual paint times — so the performance numbers here are the ones that matter.
+actual paint times, so the performance numbers here are the ones that matter.
 
     python3 dev_tests/test_web.py
 """
@@ -191,7 +191,7 @@ try:
               f"day {cell_day} not in {page.inner_text('#screen .sub')[:80]}")
 
         # ============================================================ quiz
-        print("\n[3] the quiz — the screen that was laggy")
+        print("\n[3] the quiz, the screen that was laggy")
         page.click('#nav button:has-text("Test")')
         page.wait_for_selector('button:has-text("Start test")')
         timed(page, "start a 27-question module",

@@ -1,5 +1,5 @@
 """
-REAL benchmark — run this on YOUR machine, with real CustomTkinter.
+REAL benchmark, run this on YOUR machine, with real CustomTkinter.
 
 Everything else in dev_tests/ runs against a stub Tk, so it can prove the app's
 logic is fast but it cannot measure what CustomTkinter itself costs. This does.
@@ -43,7 +43,7 @@ def bench(label, fn, repeat=5):
 
 
 line("=" * 74)
-line("CAT SAT — REAL PERFORMANCE BENCHMARK")
+line("CAT SAT, REAL PERFORMANCE BENCHMARK")
 line("=" * 74)
 
 # ---------------------------------------------------------------- environment
@@ -138,7 +138,7 @@ if sample:
     line(f"  -> cache speedup: {cold / max(warm, 0.001):.0f}x")
 else:
     cold = 0
-    line("  No images found — run sat_importer.py first.")
+    line("  No images found, run sat_importer.py first.")
 
 # ---------------------------------------------------------------- CTk widgets
 line("\n" + "-" * 74)
@@ -147,7 +147,7 @@ line("-" * 74)
 
 root = ctk.CTk()
 root.geometry("500x400")
-root.title("Cat SAT benchmark — closing shortly")
+root.title("Cat SAT benchmark, closing shortly")
 root.update()
 
 try:
@@ -269,13 +269,13 @@ widget_cost_20_rows = 292 * avg_widget
 if widget_cost_20_rows > 400:
     line("  CustomTkinter widget creation is the bottleneck.")
     line(f"  A 20-row review screen costs ~{widget_cost_20_rows:.0f} ms just to build widgets.")
-    line("  No amount of Python optimisation fixes this — the toolkit is the cost.")
+    line("  No amount of Python optimisation fixes this, the toolkit is the cost.")
 elif cold > 150:
     line("  Image decoding is still expensive on this machine.")
     line(f"  One cold decode is {cold:.0f} ms; the cache hides most but not all of it.")
 else:
     line("  Neither widgets nor images look pathological here.")
-    line("  The lag may be elsewhere — say what specifically feels slow.")
+    line("  The lag may be elsewhere, say what specifically feels slow.")
 
 line("")
 line("Paste everything above back into the chat.")

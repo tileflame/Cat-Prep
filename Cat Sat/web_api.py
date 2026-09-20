@@ -1,9 +1,9 @@
 """
-web_api.py — every endpoint's logic, as plain dicts.
+web_api.py, every endpoint's logic, as plain dicts.
 
 Deliberately free of HTTP: server.py does the plumbing, this does the work. That
 means the whole API is unit-testable without a socket, and the existing engine
-(adaptive_engine, study_plan, diagnostic, the repos) is reused unchanged — none
+(adaptive_engine, study_plan, diagnostic, the repos) is reused unchanged, none
 of that code knew about CustomTkinter and none of it knows about the web either.
 
 State: exactly one TestRunner at a time, held in memory. This is a single-user
@@ -48,7 +48,7 @@ def question_json(q, *, include_answer: bool = False) -> dict:
     """
     A question, ready for the browser.
 
-    The correct answer is withheld during a sitting — grading happens on the
+    The correct answer is withheld during a sitting, grading happens on the
     server so grid-in equivalence (1/2 == 0.5 == .5) uses the same tested code
     the desktop app used.
     """
@@ -194,6 +194,15 @@ def _pacing(records) -> dict:
 # CONTROLLER
 # ---------------------------------------------------------------------------
 
+def _app_version() -> str:
+    """The shipped version, read from the one place it is written down."""
+    try:
+        import setup_api
+        return setup_api.VERSION
+    except Exception:                                     # noqa: BLE001
+        return ""
+
+
 class Api:
     """Holds the sitting in progress. One instance per running server."""
 
@@ -219,6 +228,8 @@ class Api:
             # apart from "the server never answered", and that only works if
             # the field really is a boolean.
             "bankOk": bool(ok),
+            "version": _app_version(),
+            "releasesUrl": "https://github.com/tileflame/Cat-Prep/releases",
             "bankMessage": message,
             "bank": question_repo.bank_summary() if ok else {"total": 0, "by_section": {}},
             "today": today.isoformat(),
@@ -304,7 +315,7 @@ class Api:
         A month grid for the plan calendar.
 
         Marks test days, the seven-week bands, and which days you actually did
-        work on — so "have I been consistent?" is answerable at a glance.
+        work on, so "have I been consistent?" is answerable at a glance.
         """
         anchor = _parse_date(month_iso + "-01" if month_iso and len(month_iso) == 7
                              else month_iso) or date.today()
@@ -355,6 +366,11 @@ class Api:
                        "start": w["start"].isoformat(), "end": w["end"].isoformat()}
                       for w in study_plan.active_weeks()],
             "testDates": [_test_json(t) for t in study_plan.active_test_dates()],
+            # The calendar used to caption itself "Your seven-week plan", which
+            # is true only for whoever it was written for. A test three months
+            # out is a thirteen-week plan.
+            "planSpan": _plan_span(),
+            "weekCount": len(study_plan.active_weeks()),
         }
 
     def set_plan_task(self, day: str, key: str, done: bool) -> dict:
@@ -474,14 +490,14 @@ class Api:
         if due:
             ids = [d["question_id"] for d in due]
             self._redo_stages = {d["question_id"]: d["stage"] for d in due}
-            label = f"Cold redo — {len(ids)} due"
+            label = f"Cold redo, {len(ids)} due"
         else:
             mastered = attempt_repo.mastered_question_ids(streak=2)
             ids = [q for q in attempt_repo.question_ids_where(
                 only_incorrect=True, only_flagged=True, limit=limit * 3)
                 if q not in mastered][:limit]
             self._redo_stages = {}
-            label = f"Warm-up redo — {len(ids)} recent miss(es)"
+            label = f"Warm-up redo, {len(ids)} recent miss(es)"
 
         if not ids:
             return {"error": "Nothing to redo yet. Finish a drill, log your misses, "
@@ -518,7 +534,7 @@ class Api:
         if step == test_flow.STEP_DONE:
             attempt_repo.delete_session(runner.session_id)
             self._is_redo = False
-            return {"error": "Couldn't build that — the bank has no matching questions."}
+            return {"error": "Couldn't build that, the bank has no matching questions."}
         self.runner = runner
         return self._step_json(step, payload)
 
@@ -576,7 +592,7 @@ class Api:
             self._cache_images(payload.questions)
             runner = self.runner
             context = (runner.label if runner and runner.mode in (MODE_DRILL, MODE_REVIEW)
-                       else f"{payload.section} — Module {payload.module_number} of 2")
+                       else f"{payload.section}, Module {payload.module_number} of 2")
             return {"step": "module", "module": plan_json(payload),
                     "context": context,
                     "timed": bool(payload.time_limit_seconds) and bool(runner and runner.timed),
@@ -697,11 +713,11 @@ class Api:
         if fix_note is not None:
             text = str(fix_note).strip()
             if not text:
-                return {"error": "Write one sentence — it's the part that makes it stick."}
+                return {"error": "Write one sentence, it's the part that makes it stick."}
             lowered = text.lower()
             if any(p in lowered for p in BANNED_PHRASES) and len(text) < 60:
                 return {"error": "That's a diagnosis, not an instruction. Name a specific, "
-                                 "checkable action — if a stranger couldn't watch you and "
+                                 "checkable action, if a stranger couldn't watch you and "
                                  "tell whether you did it, it isn't a rule."}
         attempt_repo.tag_attempt(int(attempt_id), root_cause=root_cause, fix_note=fix_note)
 
@@ -710,12 +726,24 @@ class Api:
                     if r["attempt_id"] == int(attempt_id)), None)
         scheduled = False
         if row and row.get("root_cause") and row.get("fix_note"):
-            attempt_repo.schedule_redo(
-                row["question_id"], stage=0,
-                due_on=diagnostic.due_date_for(0, date.today()).isoformat(),
-                source_attempt=int(attempt_id), section=row.get("section") or "",
-                domain=row.get("domain") or "", skill=row.get("skill") or "")
-            scheduled = True
+            # Only schedule if this question is not ALREADY on the ladder.
+            #
+            # schedule_redo deletes any pending entry and inserts at whatever
+            # stage it is given, so without this check, editing a tag re-queued
+            # the question at stage 0. Fixing a typo in a fix note, or changing
+            # your mind about a root cause, would silently demote a question you
+            # had carried to stage 2 (due in ten days) back to "due tomorrow".
+            # The error log re-renders every entry's cause buttons and fix-note
+            # box prefilled, so editing one is a normal thing to do — meaning a
+            # user who tidies their log regularly could never graduate anything.
+            already = attempt_repo.pending_redo(row["question_id"])
+            if already is None:
+                attempt_repo.schedule_redo(
+                    row["question_id"], stage=0,
+                    due_on=diagnostic.due_date_for(0, date.today()).isoformat(),
+                    source_attempt=int(attempt_id), section=row.get("section") or "",
+                    domain=row.get("domain") or "", skill=row.get("skill") or "")
+                scheduled = True
         return {"ok": True, "scheduled": scheduled}
 
     def save_note(self, question_id: str, body: str) -> dict:
@@ -730,7 +758,7 @@ class Api:
     def history(self) -> dict:
         sessions = attempt_repo.list_sessions(limit=300)
         for session in sessions:
-            session["tierLabels"] = [TIER_LABEL.get(t, t).split("—")[0].strip()
+            session["tierLabels"] = [TIER_LABEL.get(t, t).split("-")[0].strip()
                                      for t in session.get("tier_path", [])]
         return {"sessions": sessions}
 
@@ -816,4 +844,4 @@ def _drill_label(section, domains, count, source):
         scope = domains[0]
     else:
         scope = f"{len(domains)} domains"
-    return f"Drill — {scope} ({count}q)"
+    return f"Drill, {scope} ({count}q)"

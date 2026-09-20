@@ -1,6 +1,6 @@
 # Turning this into an app
 
-Right now this folder is **source code** — it needs Python, and you start it
+Right now this folder is **source code**, it needs Python, and you start it
 with `python run.py`. The double-clickable app does not exist yet. It gets
 **built** from this source, and there are two ways to do that.
 
@@ -10,7 +10,7 @@ with the wifi off. GitHub only stores the download.
 
 ---
 
-## Path A — build it on your own PC (10 minutes, Windows only)
+## Path A: build it on your own PC (10 minutes, Windows only)
 
 Do this first. It gets you a working `.exe` today and proves the build works
 before you involve GitHub.
@@ -22,7 +22,7 @@ pyinstaller build/catprep.spec --noconfirm --clean
 
 Result: **`dist/CatPrep/CatPrep.exe`**
 
-Double-click it. From then on that is the app — no `run.py`, no terminal.
+Double-click it. From then on that is the app, no `run.py`, no terminal.
 The whole `dist/CatPrep` folder is the app, so if you move it, move the folder.
 Your questions and progress live in `CatPrep Data` next to the .exe.
 
@@ -30,7 +30,7 @@ This only builds for Windows. A Windows machine cannot build a Mac app.
 
 ---
 
-## Path B — let GitHub build all four (for other people)
+## Path B: let GitHub build all four (for other people)
 
 GitHub runs a Windows, a Mac and a Linux machine for you, free, on public
 repositories. You push a tag; it builds all four and puts them on your

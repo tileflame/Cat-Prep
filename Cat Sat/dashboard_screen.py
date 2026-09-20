@@ -1,5 +1,5 @@
 """
-dashboard_screen.py — long-run analytics across every session.
+dashboard_screen.py, long-run analytics across every session.
 
 Changes from the original:
   * the trend line plots one point per *session*, not a cumulative average per
@@ -97,7 +97,7 @@ class DashboardScreen(ctk.CTkFrame):
             tile, _, _ = ui.stat_tile(strip, "Best estimated score", str(best),
                                       C.GREEN, f"latest {latest}")
         else:
-            tile, _, _ = ui.stat_tile(strip, "Best estimated score", "—",
+            tile, _, _ = ui.stat_tile(strip, "Best estimated score", "-",
                                       C.TEXT_FAINT, "sit a full test")
         tile.pack(side="left", fill="both", expand=True, padx=4)
 
@@ -282,7 +282,7 @@ class DashboardScreen(ctk.CTkFrame):
         # A genuinely useful read on someone's test-taking behaviour.
         if pace["avg_incorrect"] > pace["avg_correct"] * 1.25:
             note = ("You spend noticeably longer on the questions you get wrong. "
-                    "That's usually a sign to guess and move on sooner — the time is "
+                    "That's usually a sign to guess and move on sooner, the time is "
                     "better spent double-checking questions you can actually finish.")
             color = C.ORANGE
         elif pace["avg_incorrect"] < pace["avg_correct"] * 0.75:

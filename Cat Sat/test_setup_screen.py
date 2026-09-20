@@ -1,5 +1,5 @@
 """
-test_setup_screen.py — configure an adaptive practice test.
+test_setup_screen.py, configure an adaptive practice test.
 
 Deliberately short: full-length or one section, timed or untimed, and the
 routing threshold if you want to move it. Everything else follows the blueprint,
@@ -124,7 +124,7 @@ class TestSetupScreen(ctk.CTkFrame):
         ).pack(fill="x", padx=22, pady=(4, 4))
         ui.caption(card,
                    "College Board doesn't publish the real cut score. 65% is a reasonable "
-                   "working estimate — raise it to make the upper route harder to earn.",
+                   "working estimate, raise it to make the upper route harder to earn.",
                    size=10).pack(anchor="w", padx=22, pady=(0, 10))
 
         self.weighted_var = ctk.StringVar(value=get_setting("routing_weighted", "on"))
@@ -189,7 +189,7 @@ class TestSetupScreen(ctk.CTkFrame):
             need = per_module * 2
             if have < need:
                 ui.caption(block,
-                           f"⚠ only {have} {section} questions imported ({need} needed) — "
+                           f"⚠ only {have} {section} questions imported ({need} needed), "
                            "modules will be short",
                            size=10, color=C.ORANGE).pack(anchor="w", padx=16, pady=(0, 10))
 
@@ -234,6 +234,6 @@ class TestSetupScreen(ctk.CTkFrame):
         )
         if not started:
             self.status.configure(
-                text="⚠ Couldn't build a module — the question bank has no questions "
+                text="⚠ Couldn't build a module, the question bank has no questions "
                      "for that section. Import more PDFs and try again."
             )

@@ -1,5 +1,5 @@
 """
-main.py — application shell and router.
+main.py, application shell and router.
 
 Run this file to start Cat SAT:
 
@@ -12,7 +12,7 @@ rationales) in the pdfs folder and run:
 
 The controller below owns exactly two things: which screen is on display, and
 the TestRunner for the sitting in progress. Screens never talk to each other
-directly — they call methods here, which keeps the navigation graph in one file.
+directly, they call methods here, which keeps the navigation graph in one file.
 """
 
 from __future__ import annotations
@@ -55,7 +55,7 @@ class SATApp(ctk.CTk):
 
     def __init__(self):
         super().__init__()
-        self.title("Cat SAT — Adaptive Practice")
+        self.title("Cat SAT, Adaptive Practice")
         self.configure(fg_color=C.BG)
 
         # Size to the screen rather than assuming a big monitor. A fixed
@@ -137,7 +137,7 @@ class SATApp(ctk.CTk):
         self._swap(DashboardScreen)
 
     def show_plan(self, day=None):
-        """Today's Plan — the screen that answers 'what am I doing right now?'"""
+        """Today's Plan, the screen that answers 'what am I doing right now?'"""
         self.runner = None
         self._swap(lambda parent, controller: PlanScreen(parent, controller, day))
 
@@ -248,7 +248,7 @@ class SATApp(ctk.CTk):
             scope = domains[0]
         else:
             scope = f"{len(domains)} domains"
-        return f"Drill — {scope} ({count}q)"
+        return f"Drill, {scope} ({count}q)"
 
     # ----------------------------------------------------------- review pools
 
@@ -260,12 +260,12 @@ class SATApp(ctk.CTk):
         mastered = attempt_repo.mastered_question_ids(streak=2)
         ids = [qid for qid in ids if qid not in mastered]
         if not ids:
-            self._toast_home("Nothing to review yet — or you've mastered everything "
+            self._toast_home("Nothing to review yet, or you've mastered everything "
                              "you previously missed. Sit a test or a drill first.")
             return False
         bank = question_repo.fetch_by_ids(ids)
         questions = [bank[qid] for qid in ids if qid in bank]
-        return self.start_review_session(questions, label="Review — mistakes & flags")
+        return self.start_review_session(questions, label="Review, mistakes & flags")
 
     def start_redo_session(self, limit: int = 10):
         """
@@ -283,7 +283,7 @@ class SATApp(ctk.CTk):
         if due:
             ids = [d["question_id"] for d in due]
             self._redo_stages = {d["question_id"]: d["stage"] for d in due}
-            label = f"Cold redo — {len(ids)} due"
+            label = f"Cold redo, {len(ids)} due"
         else:
             # Nothing has come due yet (a cold redo is scheduled for the day
             # AFTER the miss). Rather than bouncing the user back to the home
@@ -294,7 +294,7 @@ class SATApp(ctk.CTk):
                 only_incorrect=True, only_flagged=True, limit=limit * 3)
                 if q not in mastered][:limit]
             self._redo_stages = {}
-            label = f"Warm-up redo — {len(ids)} recent miss(es)"
+            label = f"Warm-up redo, {len(ids)} recent miss(es)"
 
         if not ids:
             self._toast_home("Nothing to redo yet. Finish a drill, log your misses in the "
@@ -395,7 +395,7 @@ class SATApp(ctk.CTk):
         if runner is None or runner.mode in (MODE_DRILL, MODE_REVIEW):
             return runner.label if runner else plan.section
         total = 2
-        return f"{plan.section} — Module {plan.module_number} of {total}"
+        return f"{plan.section}, Module {plan.module_number} of {total}"
 
     def _on_module_submitted(self, records, elapsed, auto, per_question_timer):
         if self.runner is None:

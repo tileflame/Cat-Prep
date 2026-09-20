@@ -1,5 +1,5 @@
 """
-adaptive_engine.py — the brain of the practice test.
+adaptive_engine.py, the brain of the practice test.
 
 Three jobs:
 
@@ -129,7 +129,7 @@ def _split_targets_across_domains(
 
     The result has to satisfy *two* margins at once: every domain must total
     exactly its quota, and every difficulty must total exactly its target. A
-    naive per-difficulty largest-remainder pass only satisfies the second one —
+    naive per-difficulty largest-remainder pass only satisfies the second one,
     it kept handing every leftover to the same domain, so Craft and Structure
     ended up with 9 of 27 questions instead of 7.
 
@@ -174,7 +174,7 @@ def _split_targets_across_domains(
     # are still short from whichever difficulty still has room.
     for domain, short in domain_deficit.items():
         while short > 0:
-            difficulty = max(difficulty_deficit, key=lambda d: difficulty_deficit[d]) \
+            difficulty = max(difficulty_deficit, key=lambda d: difficulty_deficit[d])\
                 if difficulty_deficit else "Medium"
             plan[domain][difficulty] += 1
             difficulty_deficit[difficulty] = difficulty_deficit.get(difficulty, 0) - 1
@@ -445,7 +445,7 @@ def _anchor_curve(section: str) -> list[tuple[float, float]]:
     Fractions rather than raw counts, because this function is asked to score
     things that are not a full section: a single 27-question module, an
     8-question drill. A fraction is the only thing those share with a real
-    sitting. Built once per section and cached — the table never changes.
+    sitting. Built once per section and cached, the table never changes.
     """
     key = normalize_section(section)
     cached = _CURVE_CACHE.get(key)
@@ -484,7 +484,7 @@ def estimate_section_score(correct: int, total: int, final_tier: str,
     Routing-aware estimated section score, rounded to the nearest 10.
 
     Two things decide the number. The section's conversion table turns a
-    fraction correct into a scaled score — that is where the steep top of a
+    fraction correct into a scaled score, that is where the steep top of a
     real SAT curve comes from, and why two wrong answers is 770 and not 800.
     The route you finished on then decides how much of the 200-800 range you
     could reach at all, because on an adaptive test the same raw score is worth

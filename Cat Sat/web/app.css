@@ -43,19 +43,35 @@ img{display:block;max-width:100%}
 /* ---------------------------------------------------------------- layout */
 #app{display:flex;flex-direction:column;height:100vh}
 .topbar{
-  display:flex;align-items:center;gap:8px;padding:10px 20px;
+  display:flex;align-items:center;gap:8px;padding:9px 16px;
   border-bottom:1px solid var(--border);background:var(--surface);flex:0 0 auto;
+  flex-wrap:nowrap;min-width:0;
 }
+/* Focus mode: the bar is gone entirely while a module is running, because the
+   real thing has no tabs down the side of it either. Any navigation puts it
+   back, and Escape reveals it without leaving the sitting. */
+#app.focus .topbar{display:none}
 .brand{display:flex;align-items:center;gap:10px;font-weight:700;font-size:17px;margin-right:12px}
 .brand span{font-size:22px}
-.nav{display:flex;gap:4px;flex-wrap:wrap}
+/* nowrap, not wrap. Wrapping was the whole problem: the moment the buttons ran
+   out of room they took a second line and shoved the app down. A narrow window
+   now scrolls the tabs sideways instead, which costs nothing when the window is
+   wide and keeps every tab reachable when it is not. */
+.nav{display:flex;gap:2px;flex-wrap:nowrap;overflow-x:auto;min-width:0;
+     scrollbar-width:none;-ms-overflow-style:none}
+.nav::-webkit-scrollbar{display:none}
 .nav button{
-  padding:8px 14px;border-radius:9px;color:var(--dim);font-weight:600;font-size:13px;
+  padding:7px 10px;border-radius:8px;color:var(--dim);font-weight:600;font-size:12.5px;
+  white-space:nowrap;flex:0 0 auto;
   transition:background .12s,color .12s;
 }
 .nav button:hover{background:var(--surface2);color:var(--text)}
 .nav button.on{background:var(--blue);color:#fff}
 .spacer{flex:1}
+/* The status pills are the other half of the cram. They were wrapping onto a
+   second line of their own, beside a nav that had already wrapped. */
+#topright{flex-wrap:nowrap;flex-shrink:0;gap:5px}
+#topright .pill{white-space:nowrap}
 .screen{flex:1;overflow-y:auto;overflow-x:hidden;padding:22px 24px 44px;scroll-behavior:auto}
 .screen.flush{padding:0}
 h1{font-size:24px;font-weight:700;margin-bottom:2px;letter-spacing:-.01em}
@@ -345,3 +361,14 @@ details[open]>summary{color:var(--text)}
 @media (prefers-reduced-motion:reduce){
   .bar.indeterminate>i{animation:none;left:0;width:100%;opacity:.4}
 }
+
+/* The badge in the top bar. Sized to the cap height of the wordmark next to it
+   so the two sit on the same line rather than the image shoving the text down.
+
+   nowrap on the brand itself because the top bar is a wrapping flex row: once
+   the image was in there the row ran out of width first at the brand, and
+   "Cat SAT" broke into "Cat" over "SAT" beside the badge. The name is two short
+   words, it should never be the thing that wraps. */
+.brand { white-space:nowrap; flex-shrink:0; }
+.brand .mark { width:30px; height:30px; border-radius:50%; display:block;
+               flex-shrink:0; }

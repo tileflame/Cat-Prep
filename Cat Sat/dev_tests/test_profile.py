@@ -1,5 +1,5 @@
 """
-test_profile.py — the generic layer: score-report parsing, profile maths,
+test_profile.py, the generic layer: score-report parsing, profile maths,
 and plan generation.
 
 This is the part that lets the app plan for someone other than its author, so
@@ -79,7 +79,7 @@ check("domain shares sum to 1 per section",
 check("a non-report PDF text is rejected",
       sr._parse_domains("just some words") == {})
 
-print("\n[2] profile maths — superscore and banking")
+print("\n[2] profile maths, superscore and banking")
 student = Profile(name="Example Student")
 student.add_report(report("Mar", "2026-03-14", 590, 770, {**ALL_TOP_MATH,
               "Information and Ideas": MID, "Craft and Structure": LOW,
@@ -212,7 +212,7 @@ try:
     import setup_api as _setup
 
     class _ShortStream:
-        """A browser that promised N bytes and then went away — a dropped
+        """A browser that promised N bytes and then went away, a dropped
         Wi-Fi connection, a closed laptop lid, a cancelled upload."""
 
         def __init__(self, data):

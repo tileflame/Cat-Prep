@@ -1,11 +1,11 @@
 """
-plan_screen.py — Today's Plan.
+plan_screen.py, Today's Plan.
 
 Answers one question the moment you open the app: what am I doing right now?
 
 Everything on this screen comes from study_plan.py, which is the SAT Command
 Center document turned into data. The buttons launch the exact drill the plan
-asks for, pre-filtered — so "20 Transitions questions" is one click, not five
+asks for, pre-filtered, so "20 Transitions questions" is one click, not five
 dropdowns.
 """
 
@@ -128,7 +128,7 @@ class PlanScreen(ctk.CTkFrame):
                                   f"{counts['upcoming']} scheduled later")
         tile.pack(side="left", fill="both", expand=True, padx=4)
 
-        tile, _, _ = ui.stat_tile(strip, "Target", study_plan.active_target() or "—", C.PURPLE,
+        tile, _, _ = ui.stat_tile(strip, "Target", study_plan.active_target() or "-", C.PURPLE,
                                   "superscore")
         tile.pack(side="left", fill="both", expand=True, padx=4)
 
@@ -146,7 +146,7 @@ class PlanScreen(ctk.CTkFrame):
             # for everyone else and a leak of whoever's dates got baked in.
             weeks = study_plan.active_weeks()
             span = (f"Your plan covers {weeks[0]['start']:%b %-d} to {weeks[-1]['end']:%b %-d, %Y}. "
-                    if weeks else "You have no plan window yet — run setup_profile.py. ")
+                    if weeks else "You have no plan window yet, run setup_profile.py. ")
             ui.body(card, span + "Use the arrows above to look at a day inside it.",
                     size=12).pack(anchor="w", padx=20, pady=(0, 16))
             return
@@ -156,7 +156,7 @@ class PlanScreen(ctk.CTkFrame):
 
         head = ui.row(card)
         head.pack(fill="x", padx=20, pady=(16, 4))
-        ui.title(head, f"Week {week['number']} — {week['title']}", size=17).pack(side="left")
+        ui.title(head, f"Week {week['number']}, {week['title']}", size=17).pack(side="left")
         ui.pill(head, week["kind"].upper(),
                 C.ORANGE if week["kind"] == "taper" else C.GREEN).pack(side="left", padx=10)
         ui.caption(head, f"{week['hours']}h total  ·  Math {week['math_hours']}h  ·  "
@@ -176,7 +176,7 @@ class PlanScreen(ctk.CTkFrame):
         ui.caption(focus, "FOCUS:", size=10).pack(side="left", padx=(0, 8))
         for domain in week.get("focus_domains", []):
             priority = study_plan.active_priorities().get(domain, {})
-            ui.pill(focus, f"{domain} — {priority.get('verdict', '')}", C.AMBER).pack(
+            ui.pill(focus, f"{domain}, {priority.get('verdict', '')}", C.AMBER).pack(
                 side="left", padx=3)
 
     # -------------------------------------------------------------- redo card
@@ -198,7 +198,7 @@ class PlanScreen(ctk.CTkFrame):
                      font=ui.f(15, "bold"), text_color=C.PURPLE, anchor="w").pack(anchor="w")
         ui.caption(block,
                    "From scratch, no notes. If you can't reproduce the solution it isn't "
-                   "learned — recognition is not recall.",
+                   "learned, recognition is not recall.",
                    size=11).pack(anchor="w", pady=(2, 0))
 
         ctk.CTkButton(line, text="Start redo session", font=ui.f(13, "bold"),
@@ -299,7 +299,7 @@ class PlanScreen(ctk.CTkFrame):
         Update just this row and the progress bar.
 
         The old version called refresh(), which tore down and rebuilt the whole
-        screen — roughly 300 widgets and 17 database connections — to tick one
+        screen, roughly 300 widgets and 17 database connections, to tick one
         checkbox.
         """
         attempt_repo.set_plan_task(self.day_key, self._key(index), done)
@@ -419,7 +419,7 @@ class PlanScreen(ctk.CTkFrame):
             block = ui.row(card)
             block.pack(fill="x", padx=20, pady=4)
             ctk.CTkLabel(block,
-                         text=f"⚠  {label} has 3+ misses this week — the plan says make it "
+                         text=f"⚠  {label} has 3+ misses this week, the plan says make it "
                               "a target.",
                          font=ui.f(12), text_color=C.ORANGE, anchor="w").pack(side="left")
             ctk.CTkButton(block, text="Add target", font=ui.f(11, "bold"),

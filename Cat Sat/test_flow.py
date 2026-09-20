@@ -1,5 +1,5 @@
 """
-test_flow.py — the state machine that runs a sitting from start to results.
+test_flow.py, the state machine that runs a sitting from start to results.
 
 The quiz screen stays dumb: it shows a list of questions and hands back what the
 user did. This module decides what comes next, persists everything, and works
@@ -180,7 +180,7 @@ class TestRunner:
         if mode == MODE_FULL:
             return "Full-length adaptive test"
         if mode == MODE_SECTION and sections:
-            return f"{sections[0]} — adaptive test"
+            return f"{sections[0]}, adaptive test"
         if mode == MODE_REVIEW:
             return "Review session"
         return "Practice drill"
@@ -308,7 +308,7 @@ class TestRunner:
             self._pending_break = {
                 "kind": "module",
                 "section": plan.section,
-                "heading": f"{plan.section} — Module 1 complete",
+                "heading": f"{plan.section}, Module 1 complete",
                 "detail": outcome.routing_note,
                 "next_label": f"Module 2 · {TIER_LABEL[next_tier]}",
                 "tier": next_tier,
@@ -336,7 +336,7 @@ class TestRunner:
                 "detail": (f"You scored {outcome.correct}/{outcome.total} "
                            f"({outcome.accuracy:.0f}%). Estimated section score: "
                            f"{outcome.estimated_score}."),
-                "next_label": f"{next_section} — Module 1",
+                "next_label": f"{next_section}, Module 1",
                 "tier": TIER_BASELINE,
                 "minutes": 10,
                 "result": result,

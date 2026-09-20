@@ -1,5 +1,5 @@
 """
-config.py — single source of truth for paths, theme tokens and SAT blueprint data.
+config.py, single source of truth for paths, theme tokens and SAT blueprint data.
 
 Everything else in Cat SAT imports from here so there is exactly one place to
 change a colour, a file location, or a test blueprint.
@@ -72,10 +72,29 @@ def resolve_asset(stored_path: str | None) -> str | None:
 
     # Try the data folder first, then the working directory (matches legacy
     # behaviour), then the app folder (correct when launched from elsewhere).
-    for root in (DATA_DIR, Path.cwd(), BASE_DIR):
+    roots = (DATA_DIR, Path.cwd(), BASE_DIR)
+    for root in roots:
         resolved = root / candidate
         if resolved.exists():
             return str(resolved)
+
+    # Last resort: the separators are from a different operating system.
+    #
+    # An import run on Windows stores "images\\abc123.png". Windows treats the
+    # backslash as a separator, so that works there forever — but move the
+    # folder to a Mac and every single question goes blank, because on a POSIX
+    # system a backslash is an ordinary character in a filename and the file
+    # "images\\abc123.png" genuinely does not exist. It fails silently: the
+    # question is there, the image file is there, and the app shows nothing.
+    #
+    # Only reached after the literal path has already failed, so a filename
+    # that really does contain a backslash still resolves first.
+    swapped = text.replace("\\", "/") if "\\" in text else text.replace("/", "\\")
+    if swapped != text:
+        for root in roots:
+            resolved = root / Path(swapped)
+            if resolved.exists():
+                return str(resolved)
     return None
 
 
@@ -233,8 +252,8 @@ DEFAULT_ROUTING_THRESHOLD = 0.65
 
 TIER_LABEL = {
     TIER_BASELINE: "Baseline (mixed)",
-    TIER_HARD: "Upper route — harder Module 2",
-    TIER_EASY: "Lower route — easier Module 2",
+    TIER_HARD: "Upper route, harder Module 2",
+    TIER_EASY: "Lower route, easier Module 2",
 }
 
 TIER_COLOR = {

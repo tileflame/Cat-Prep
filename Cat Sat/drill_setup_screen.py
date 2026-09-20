@@ -1,5 +1,5 @@
 """
-drill_setup_screen.py — build a targeted drill.
+drill_setup_screen.py, build a targeted drill.
 
 This is the screen the original app was missing: pick one or more domains, say
 how many questions, and get them ordered Easy → Medium → Hard with an optional
@@ -212,7 +212,7 @@ class DrillSetupScreen(ctk.CTkFrame):
 
         # Default to the weakest domain if there's history, otherwise the first.
         weakest = attempt_repo.weakest("domain", min_attempts=4, limit=1)
-        preferred = weakest[0]["bucket"] if weakest and weakest[0]["bucket"] in self.domain_vars \
+        preferred = weakest[0]["bucket"] if weakest and weakest[0]["bucket"] in self.domain_vars\
             else domains[0]
         self.domain_vars[preferred].set("on")
         self._update_availability()
@@ -255,7 +255,7 @@ class DrillSetupScreen(ctk.CTkFrame):
         if counts is None:
             counts = self._domain_counts = question_repo.domain_counts(section)
         if by_difficulty is None:
-            by_difficulty = self._domain_difficulty = \
+            by_difficulty = self._domain_difficulty =\
                 question_repo.domain_difficulty_counts(section)
 
         target_domains = domains or list(counts)

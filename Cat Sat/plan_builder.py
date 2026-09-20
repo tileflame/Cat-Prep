@@ -1,5 +1,5 @@
 """
-plan_builder.py — turn a Profile into a week-by-week and day-by-day study plan.
+plan_builder.py, turn a Profile into a week-by-week and day-by-day study plan.
 
 The hardcoded seven-week plan in study_plan.py was written for one student with
 one set of test dates and one set of weaknesses. This builds the same shape of
@@ -10,7 +10,7 @@ succeed and fail:
 
   1. A banked section gets zero minutes. Superscore keeps your best section
      forever, so once a section is finished, studying it cannot raise your
-     score — it can only take time from the section that can still move.
+     score, it can only take time from the section that can still move.
 
   2. A short window before a test goes to a RULE-based domain, not the
      weakest one. Rules move in days. Comprehension takes weeks. Spending
@@ -29,7 +29,7 @@ from __future__ import annotations
 from datetime import date, timedelta
 
 from config import SECTION_MATH, SECTION_RW
-from user_profile import Profile
+from user_profile import Profile, PROFILE_PATH
 from score_report import RW, MATH, SECTION_OF
 
 # ---------------------------------------------------------------------------
@@ -40,7 +40,7 @@ from score_report import RW, MATH, SECTION_OF
 # method is just more questions.
 
 METHOD_PREDICT = ("Cover the choices. Answer in your own words FIRST, then look. "
-                  "Wrong answers are written to sound reasonable — you beat them by "
+                  "Wrong answers are written to sound reasonable, you beat them by "
                   "already knowing what you are looking for.")
 
 SESSIONS = {
@@ -54,7 +54,7 @@ SESSIONS = {
             "Transitions: read the sentence before and the sentence after, say the "
             "relationship out loud in plain English, THEN look at the choices. "
             "Rhetorical Synthesis: read the GOAL first, before the bullets. The right "
-            "answer does exactly the goal — choices that are true but do something "
+            "answer does exactly the goal, choices that are true but do something "
             "else are the trap."),
     },
     "Craft and Structure": {
@@ -66,9 +66,9 @@ SESSIONS = {
             "word in the blank before you look at anything."),
         "method": (
             "Words in Context: your own word first, in writing, every time. If you "
-            "cannot produce one you have not understood the sentence — reread rather "
+            "cannot produce one you have not understood the sentence, reread rather "
             "than guessing from the choices. Text Structure: ask what the sentence "
-            "DOES, not what it says. Answer with a verb — introduces, qualifies, "
+            "DOES, not what it says. Answer with a verb, introduces, qualifies, "
             "contrasts, illustrates, concedes, refutes."),
     },
     "Information and Ideas": {
@@ -79,13 +79,13 @@ SESSIONS = {
             "sounds. That single rule is most of this domain."),
         "method": (
             "Answer in your own words before you look. For evidence questions, read "
-            "what the data actually says before you read the claim — the trap is a "
+            "what the data actually says before you read the claim, the trap is a "
             "choice that describes the graph correctly but does not support the claim."),
     },
     "Standard English Conventions": {
         "skills": ["Boundaries", "Form, Structure and Sense"],
         "opening": (
-            "Write C or F — complete or fragment — for each side of the punctuation "
+            "Write C or F, complete or fragment, for each side of the punctuation "
             "BEFORE you look at the choices. Two completes need a full stop, a "
             "semicolon, or a comma plus a conjunction."),
         "method": (
@@ -160,12 +160,21 @@ def build_weeks(profile: Profile, today: date) -> list[dict]:
     Weeks from today to the last upcoming test, alternating build and taper.
 
     A week that contains a test is a taper week. Everything else is a build
-    week, and its focus is chosen for the window remaining — which is how a
+    week, and its focus is chosen for the window remaining, which is how a
     short run-in ends up on a rule-based domain instead of the weakest one.
     """
     tests = profile.upcoming_tests(today)
     if not tests:
-        return []
+        # Two different people arrive here and they want opposite answers.
+        #
+        # Somebody who has never entered a test date has not finished setting
+        # the app up. active_plan() returns None for them anyway, and the right
+        # screen is "run setup", not a plan. No weeks.
+        #
+        # Somebody whose dates are all behind them has finished setting it up
+        # and then sat the exam. Handing THEM no weeks is what blanked the plan
+        # screen the morning after, so they get maintenance.
+        return _maintenance_weeks(profile, today) if profile.test_dates else []
 
     banked = profile.banked_sections()
     last = tests[-1]["date"]
@@ -206,11 +215,66 @@ def build_weeks(profile: Profile, today: date) -> list[dict]:
     return weeks
 
 
+#: How far ahead to plan when there is no test on the calendar. The window
+#: rolls, because the plan is rebuilt for whatever today is.
+MAINTENANCE_WEEKS = 4
+
+
+def _maintenance_weeks(profile: Profile, today: date) -> list[dict]:
+    """
+    Weeks for somebody with no test date ahead of them.
+
+    This case used to return an empty list, and an empty list of weeks means an
+    empty dict of days, which means every single day of the year reports
+    "Outside your planned window" with nothing on it. That is what a returning
+    user sees the morning after their test: an app with their whole history in
+    it, a redo queue with work in it, and a blank plan telling them nothing.
+
+    The day after a test is not a day with no work. It is the day the brain dump
+    is worth most, and the redo queue is still due. So the plan keeps running on
+    the same weakest-domain rotation, and the UI says plainly that no test is
+    booked and offers to take one, rather than going dark and leaving the reason
+    to be guessed at.
+    """
+    banked = profile.banked_sections()
+    weeks: list[dict] = []
+    cursor = _week_bounds(today)[0]
+    worked: set[str] = set()
+
+    for number in range(MAINTENANCE_WEEKS):
+        end = cursor + timedelta(days=6)
+        # days_out None is the "no deadline" signal focus_for_window already
+        # takes, and it is what makes this pick the weakest domain outright
+        # instead of the one that moves fastest in a short run-in.
+        focus = profile.focus_for_window(None, already_worked=worked)
+        if focus:
+            worked.add(focus[0])
+        hours = 6
+        weeks.append({
+            "number": number, "kind": "maintenance",
+            "title": focus[0] if focus else "General review",
+            "start": cursor, "end": end, "hours": hours,
+            "math_hours": 0.0 if MATH in banked else hours * 0.3,
+            "rw_hours": hours * (1.0 if MATH in banked else 0.7),
+            "summary": ("No test booked, so this is maintenance: hold the ground you "
+                        "have and keep the redo queue clear. Add a test date in Setup "
+                        "and this becomes a countdown plan built around it."),
+            "focus_domains": focus,
+            "bullets": _week_bullets(profile, focus, "maintenance", [], banked),
+        })
+        cursor = end + timedelta(days=1)
+
+    return weeks
+
+
 def _week_bullets(profile, focus, kind, tests_in_week, banked) -> list[str]:
     bullets = []
+    if kind == "maintenance":
+        bullets.append("No test date on the calendar. Add one in Setup and every week "
+                       "below gets rebuilt around it.")
     if banked:
         names = " and ".join(sorted(banked))
-        bullets.append(f"{names} is banked by superscore — zero minutes on it. Every "
+        bullets.append(f"{names} is banked by superscore, zero minutes on it. Every "
                        f"minute there is a minute taken from the section that can "
                        f"still move.")
     for domain in focus:
@@ -224,7 +288,7 @@ def _week_bullets(profile, focus, kind, tests_in_week, banked) -> list[str]:
     else:
         bullets.append("Every session: one skill block, a written justification for "
                        "every answer, then the error log. That order is what moves a "
-                       "domain — the log is not optional.")
+                       "domain, the log is not optional.")
     return bullets
 
 
@@ -238,16 +302,16 @@ def _study_day(week: dict, day: date, profile: Profile) -> dict:
     section_name = SECTION_OF.get(primary, RW)
     section = SECTION_CONST[section_name]
 
-    tasks = [_redo(10, "Cold warm-up — 3 redo questions",
+    tasks = [_redo(10, "Cold warm-up, 3 redo questions",
                    "From your due queue, from scratch, no notes. This is how learning "
                    "becomes permanent instead of temporary.")]
 
     if entry.get("opening") and day.weekday() in (6, 0):     # Sun / Mon of the week
-        tasks.append(_manual(15, f"{primary} — the method, written down",
+        tasks.append(_manual(15, f"{primary}, the method, written down",
                              entry["opening"]))
 
     tasks.append(_drill(
-        45, f"★ {primary} — skill block",
+        45, f"★ {primary}, skill block",
         (entry.get("method") or METHOD_PREDICT) +
         " Write one line of why for every answer, including the ones you are sure about.",
         section=section, domains=[primary], count=20))
@@ -255,7 +319,7 @@ def _study_day(week: dict, day: date, profile: Profile) -> dict:
     if len(focus) > 1:
         second = focus[1]
         tasks.append(_drill(
-            20, f"Second block — {second}",
+            20, f"Second block, {second}",
             SESSIONS.get(second, {}).get("method") or METHOD_PREDICT,
             section=SECTION_CONST[SECTION_OF.get(second, RW)],
             domains=[second], count=10))
@@ -263,18 +327,21 @@ def _study_day(week: dict, day: date, profile: Profile) -> dict:
     tasks.append(_manual(7, "Break", "Stand up. Move. No phone. Seven minutes."))
 
     module_section = SECTION_RW if MATH in banked else section
-    tasks.append(_module(32, f"Timed module — {module_section}",
+    tasks.append(_module(32, f"Timed module, {module_section}",
                          "Real conditions. Two-pass strategy. Do not finish early.",
                          section=module_section))
 
-    tasks.append(_review(30, "Error analysis — never skip",
+    tasks.append(_review(30, "Error analysis, never skip",
                          "Log every miss and every lucky guess. Tag the cause. Write "
                          "the one-sentence fix. A 45-minute session that is 20 minutes "
                          "of practice and 25 of review beats 90 minutes of pure practice."))
 
     total = sum(t["minutes"] for t in tasks)
-    headline = primary if week["kind"] == "build" else f"{week['title']} — {primary}"
-    if week["kind"] == "build" and len(focus) > 1:
+    # A maintenance week's title IS its primary domain, so the taper form of this
+    # headline would read "Craft and Structure, Craft and Structure".
+    plain = week["kind"] in ("build", "maintenance")
+    headline = primary if plain else f"{week['title']}, {primary}"
+    if plain and len(focus) > 1:
         headline = f"{primary} + {focus[1]}"
     return {"headline": headline,
             "hours": f"~{round(total / 60 * 4) / 4:g} h", "tasks": tasks}
@@ -296,10 +363,10 @@ def build_days(profile: Profile, weeks: list[dict], today: date) -> dict[date, d
 
             if day in tests:
                 days[day] = {
-                    "headline": f"{tests[day]['label']} — test day",
+                    "headline": f"{tests[day]['label']}, test day",
                     "hours": "test day",
                     "tasks": [_manual(0, "Read your one page, then nothing else.",
-                                      "Five minutes. No new questions in the car — "
+                                      "Five minutes. No new questions in the car, "
                                       "cramming raises anxiety and returns nothing.")],
                 }
             elif yesterday_was_test:
@@ -310,14 +377,14 @@ def build_days(profile: Profile, weeks: list[dict], today: date) -> dict[date, d
                         _manual(30, "Write it all down within 12 hours",
                                 "Which question types felt hard, where time ran out, "
                                 "whether Module 2 was easier or harder. You will never "
-                                "see those questions again — this is the only record "
+                                "see those questions again, this is the only record "
                                 "that will ever exist."),
                         _manual(0, "Then take the rest of the day off", ""),
                     ],
                 }
             elif tomorrow_is_test:
                 days[day] = {
-                    "headline": "OFF — pack and sleep",
+                    "headline": "OFF, pack and sleep",
                     "hours": "0",
                     "tasks": [
                         _manual(10, "Read your rule sheet once. Then close the laptop.",
@@ -330,7 +397,7 @@ def build_days(profile: Profile, weeks: list[dict], today: date) -> dict[date, d
                 }
             elif day.weekday() == 6:                       # Sunday
                 days[day] = {
-                    "headline": f"Week {week['number']} — Sunday re-plan",
+                    "headline": f"Week {week['number']}, Sunday re-plan",
                     "hours": "~45 min",
                     "tasks": [
                         _review(30, "Weekly diagnosis",
@@ -339,7 +406,7 @@ def build_days(profile: Profile, weeks: list[dict], today: date) -> dict[date, d
                         _redo(15, "Clear the due redo queue", "", count=10),
                     ],
                 }
-            elif day.weekday() == 5 and week["kind"] == "build":
+            elif day.weekday() == 5 and week["kind"] in ("build", "maintenance"):
                 days[day] = {
                     "headline": "Timed practice + full review",
                     "hours": "~1.25 h",
@@ -348,7 +415,7 @@ def build_days(profile: Profile, weeks: list[dict], today: date) -> dict[date, d
                                 section=SECTION_RW if MATH in profile.banked_sections()
                                 else SECTION_CONST[SECTION_OF.get(
                                     (week["focus_domains"] or ["Craft and Structure"])[0], RW)]),
-                        _review(35, "Review it — 35 minutes on 32 minutes of test",
+                        _review(35, "Review it, 35 minutes on 32 minutes of test",
                                 "That ratio is the point. Every miss, every lucky "
                                 "guess, every one you flagged and got right."),
                     ],
@@ -380,9 +447,45 @@ def build_plan(profile: Profile, today: date | None = None) -> dict:
     }
 
 
-def active_plan(today: date | None = None) -> dict | None:
-    """The generated plan if a profile exists, otherwise None."""
-    me = Profile.load()
-    if me is None or not me.test_dates:
+# Cache of the last generated plan, keyed by (profile fingerprint, day).
+#
+# WHY THIS IS HERE
+# ----------------
+# active_plan() reads profile.json off disk and rebuilds every week and every
+# day of the schedule. That is ~6 ms for a profile whose last test is months
+# out — fine once, and it is not called once. Api.calendar() loops over 42 days
+# calling active_week_for() AND active_day_plan() for each, and every one of
+# those calls active_plan(). Add the test dates, the other dates and the weeks
+# and one calendar request rebuilt the identical plan about 88 times: roughly
+# half a second of pure recomputation before a single byte was sent.
+#
+# The fingerprint is the profile file's (size, mtime), so editing the profile
+# invalidates the cache without needing anyone to remember to clear it.
+_CACHE: dict = {"key": None, "plan": None}
+
+
+def _profile_fingerprint():
+    try:
+        stat = PROFILE_PATH.stat()
+        return (stat.st_size, stat.st_mtime_ns)
+    except OSError:
         return None
-    return build_plan(me, today)
+
+
+def active_plan(today: date | None = None) -> dict | None:
+    """The generated plan if a profile exists, otherwise None. Cached."""
+    key = (_profile_fingerprint(), today or date.today())
+    if _CACHE["key"] == key:
+        return _CACHE["plan"]
+
+    me = Profile.load()
+    plan = None if (me is None or not me.test_dates) else build_plan(me, today)
+    _CACHE["key"] = key
+    _CACHE["plan"] = plan
+    return plan
+
+
+def clear_plan_cache() -> None:
+    """Drop the cached plan. Called after the profile is written."""
+    _CACHE["key"] = None
+    _CACHE["plan"] = None

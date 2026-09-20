@@ -1,5 +1,5 @@
 """
-attempt_repo.py — persistence and analytics for everything the user does.
+attempt_repo.py, persistence and analytics for everything the user does.
 
 Writes to database/progress.db only. Section / domain / skill / difficulty are
 denormalised onto each attempt row so your history stays readable even if you
@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import sys
 
 from database import progress_conn
 
@@ -132,10 +133,30 @@ def record_attempts(session_id: int, module_row_id: int | None, records) -> int:
 # ---------------------------------------------------------------------------
 
 def _query(sql: str, params=()) -> list[sqlite3.Row]:
+    """
+    Run a read and return rows, never raising.
+
+    Swallowing the exception keeps a damaged database from taking the whole app
+    down, a dashboard with a missing panel beats a blank screen. But it also
+    made a MISTAKE look exactly like an empty result: `ORDER BY id` on a table
+    whose key is `queue_id` returned [], the caller decided there was nothing
+    queued, and the bug was invisible until a test happened to expect a row.
+    That is the worst shape a bug can have.
+
+    So: still return [], still never raise, but say so, loudly, on stderr. A
+    real data problem and a typo in the SQL are different things, and the
+    difference should not be free to ignore.
+    """
     try:
         with progress_conn() as conn:
             return conn.execute(sql, params).fetchall()
-    except sqlite3.DatabaseError:
+    except sqlite3.OperationalError as exc:
+        # Bad column, bad table, bad syntax: a programming error, not bad data.
+        print(f"[attempt_repo] QUERY FAILED, this is a bug, not empty data:\n"
+              f"    {exc}\n    {' '.join(sql.split())[:160]}", file=sys.stderr)
+        return []
+    except sqlite3.DatabaseError as exc:
+        print(f"[attempt_repo] database error: {exc}", file=sys.stderr)
         return []
 
 
@@ -347,7 +368,7 @@ def mastered_question_ids(streak: int = 2) -> set[str]:
     Questions answered correctly on their last `streak` encounters.
 
     Done in SQL with a window function so it does not pull the entire attempts
-    table into Python — that got slower every week you used the app. Falls back
+    table into Python, that got slower every week you used the app. Falls back
     to the Python version on SQLite builds older than 3.25.
     """
     sql = """
@@ -491,7 +512,7 @@ def recent_logged(limit: int = 120) -> list[dict]:
     """
     Every miss and lucky guess across all sessions, newest first, in ONE query.
 
-    The error log used to call logged_attempts() in a loop over 25 sessions —
+    The error log used to call logged_attempts() in a loop over 25 sessions,
     25 round trips to build one screen.
     """
     rows = _query(
@@ -517,7 +538,7 @@ def untagged_count(session_id: int | None = None) -> int:
 
 
 def cause_counts(since_days: int | None = 7, session_id: int | None = None) -> dict:
-    """Misses grouped by root cause — the input to the diagnosis table."""
+    """Misses grouped by root cause, the input to the diagnosis table."""
     clauses = ["COALESCE(root_cause,'') <> ''"]
     params: list = []
     if session_id is not None:
@@ -549,7 +570,7 @@ def lucky_counts(since_days: int | None = 7, group_by: str = "domain") -> dict:
 
 
 def miss_counts_by_type(since_days: int = 7, group_by: str = "domain") -> dict:
-    """Misses grouped by question type — drives drill-target suggestions."""
+    """Misses grouped by question type, drives drill-target suggestions."""
     if group_by not in ("domain", "skill"):
         raise ValueError(group_by)
     rows = _query(
@@ -578,6 +599,14 @@ def log_totals(since_days: int = 7) -> dict:
 # ---------------------------------------------------------------------------
 # REDO QUEUE
 # ---------------------------------------------------------------------------
+
+def pending_redo(question_id: str) -> dict | None:
+    """The un-completed redo already queued for this question, if any."""
+    rows = _query(
+        "SELECT * FROM redo_queue WHERE question_id = ? AND completed_at IS NULL "
+        "ORDER BY queue_id DESC LIMIT 1", (question_id,))
+    return dict(rows[0]) if rows else None
+
 
 def schedule_redo(question_id: str, *, stage: int, due_on: str,
                   source_attempt: int | None = None, section: str = "",
@@ -661,7 +690,7 @@ def retire_target(target_id: int, accuracy: float) -> None:
 
 def target_progress(label: str, axis: str = "domain", sample: int = 15) -> dict:
     """
-    Accuracy on the most recent `sample` questions of this type — the only
+    Accuracy on the most recent `sample` questions of this type, the only
     evidence that counts for retiring a target.
     """
     if axis not in ("domain", "skill"):

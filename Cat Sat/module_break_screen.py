@@ -1,5 +1,5 @@
 """
-module_break_screen.py — the moment between modules.
+module_break_screen.py, the moment between modules.
 
 This is where the adaptive routing becomes visible: you finished Module 1, here
 is how you did, and here is which Module 2 that earns you. Between sections it
@@ -107,7 +107,7 @@ class ModuleBreakScreen(ctk.CTkFrame):
         if not self.winfo_exists():
             return
         if self.remaining <= 0:
-            self.countdown_label.configure(text="Break over — continue when ready.",
+            self.countdown_label.configure(text="Break over. Continue when ready.",
                                            text_color=C.GREEN)
             return
         mins, secs = divmod(self.remaining, 60)

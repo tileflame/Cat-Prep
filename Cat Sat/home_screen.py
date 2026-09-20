@@ -1,13 +1,13 @@
 """
-home_screen.py — the hub.
+home_screen.py, the hub.
 
 The old home screen was a single configuration form, which meant everything the
 app could do had to be squeezed into five dropdowns. Now it's a launcher: pick
 what kind of work you're doing, and the setup screen for that mode asks only the
 questions that mode needs.
 
-It also tells you the truth about your question bank up front — how many
-questions are imported and whether that's enough for a real adaptive test —
+It also tells you the truth about your question bank up front, how many
+questions are imported and whether that's enough for a real adaptive test,
 instead of failing with "No questions found" after you press start.
 """
 
@@ -89,9 +89,9 @@ class HomeScreen(ctk.CTkFrame):
             counts = summary["by_section"]
             parts = [f"{name}: {counts.get(name, 0):,}" for name in (SECTION_RW, SECTION_MATH)
                      if counts.get(name)]
-            ctk.CTkLabel(text_block, text=f"Question bank ready — {summary['total']:,} questions",
+            ctk.CTkLabel(text_block, text=f"Question bank ready, {summary['total']:,} questions",
                          font=ui.f(13, "bold"), text_color=C.TEXT, anchor="w").pack(anchor="w")
-            ui.caption(text_block, "   ·   ".join(parts) or "—", size=11).pack(anchor="w")
+            ui.caption(text_block, "   ·   ".join(parts) or "-", size=11).pack(anchor="w")
 
             # Honest readiness check against the blueprint.
             warnings = self._coverage_warnings(summary)
@@ -143,11 +143,11 @@ class HomeScreen(ctk.CTkFrame):
         week = study_plan.active_week_for(today)
         days = study_plan.active_days_until_next_test(today)
         if week is not None:
-            plan_detail = (f"Week {week['number']} — {week['title']}. "
+            plan_detail = (f"Week {week['number']}, {week['title']}. "
                            + (f"{days} day(s) to your next SAT. " if days is not None else "")
                            + "Today's tasks, one click each.")
         else:
-            plan_detail = "Your seven-week Command Center: what to do today, in order."
+            plan_detail = "What to do today, in order, built from your own scores."
         self._mode_card(
             top, "📋", "Today's Plan",
             plan_detail,
@@ -156,7 +156,7 @@ class HomeScreen(ctk.CTkFrame):
         self._mode_card(
             top, "🎯", "Adaptive Practice Test",
             "Module 1 sets the pace, then routes you into a harder or easier "
-            "Module 2 — exactly like the real digital SAT.",
+            "Module 2, exactly like the real digital SAT.",
             "Start a test", self.controller.show_test_setup, C.GREEN, side="left",
         )
         bottom = ui.row(grid)
@@ -180,7 +180,7 @@ class HomeScreen(ctk.CTkFrame):
         )
         self._mode_card(
             bottom, "🕘", "History & Analytics",
-            "Every past sitting stays openable — scores, routing, per-skill "
+            "Every past sitting stays openable, scores, routing, per-skill "
             "accuracy and every rationale you've already seen.",
             "Open history", self.controller.show_history, C.ORANGE, side="left",
         )
@@ -241,6 +241,6 @@ class HomeScreen(ctk.CTkFrame):
                                       f"{worst['accuracy']:.0f}%", C.ORANGE,
                                       worst["bucket"])
         else:
-            tile, _, _ = ui.stat_tile(strip, "Weakest domain", "—", C.TEXT_FAINT,
+            tile, _, _ = ui.stat_tile(strip, "Weakest domain", "-", C.TEXT_FAINT,
                                       "answer a few more")
         tile.pack(side="left", fill="both", expand=True, padx=4)

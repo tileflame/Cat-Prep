@@ -1,5 +1,5 @@
 """
-background.py — keep slow work off the Tk event loop, safely.
+background.py, keep slow work off the Tk event loop, safely.
 
 Tk is single-threaded and its API is *not* thread-safe: calling ``widget.after``
 (or anything else) from a worker thread can raise or corrupt the interpreter.
@@ -72,7 +72,7 @@ def submit(func, *args, on_done=None, widget=None, **kwargs) -> None:
 
     ``on_done(result, error)`` runs later on the Tk thread, via the pump.
     ``widget`` is accepted for call-site readability but is not used to schedule
-    anything — that is exactly the unsafe thing this module exists to avoid.
+    anything, that is exactly the unsafe thing this module exists to avoid.
     """
     global _outstanding
     _ensure_worker()

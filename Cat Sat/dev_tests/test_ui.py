@@ -2,7 +2,7 @@
 Headless UI smoke test: drives the real screens through a customtkinter shim.
 
 Catches import errors, bad widget kwargs, wrong controller method names,
-attribute typos, timer leaks and crashes in any code path a user can reach —
+attribute typos, timer leaks and crashes in any code path a user can reach,
 everything except literal pixel layout.
 
 Run: python3 dev_tests/test_ui.py
@@ -154,7 +154,7 @@ def answer(q, idx, correct=True):
         quiz.ans_entry.insert(0, question.correct_answer if correct else "999")
         quiz.save_current()
     else:
-        want = question.correct_answer if correct else \
+        want = question.correct_answer if correct else\
             next(c for c in "ABCD" if c != question.correct_answer)
         quiz.select(want)
 

@@ -1,12 +1,12 @@
 """
-diagnostic.py — the engine of the plan (Section 07).
+diagnostic.py, the engine of the plan (Section 07).
 
 "Practice questions don't raise scores; diagnosed practice questions do."
 
 Two axes per logged question:
-  WHAT  the question type — Cat SAT already knows this from the bank's
+  WHAT  the question type, Cat SAT already knows this from the bank's
         domain/skill columns, so it is filled in automatically.
-  WHY   the root cause — only you can supply this, so the review screen asks.
+  WHY   the root cause, only you can supply this, so the review screen asks.
 
 Plus the two things the plan cares about most and no app does:
   * lucky guesses are logged as misses ("your real error count is closer to 20
@@ -54,7 +54,7 @@ def diagnose(cause_counts: dict, total_logged: int, lucky_by_type: dict | None =
     Read the prescription off the dominant root cause.
 
     Returns a list of findings, most important first. Each has a verdict, the
-    prescription, and — just as important — what NOT to do instead.
+    prescription, and, just as important, what NOT to do instead.
     """
     if not total_logged:
         return []
@@ -71,7 +71,7 @@ def diagnose(cause_counts: dict, total_logged: int, lucky_by_type: dict | None =
             "verdict": "Process, not knowledge",
             "do": "Run the four-step answer protocol religiously. Underline the ask, "
                   "re-read the last line before submitting.",
-            "dont": "Do NOT study new content — there is nothing wrong with your content.",
+            "dont": "Do NOT study new content, there is nothing wrong with your content.",
             "severity": 3,
         })
 
@@ -79,7 +79,7 @@ def diagnose(cause_counts: dict, total_logged: int, lucky_by_type: dict | None =
     if method > 0.35:
         findings.append({
             "trigger": f"X + P + V = {method * 100:.0f}% of logged questions",
-            "verdict": "Method — you're reading the choices before forming a prediction",
+            "verdict": "Method, you're reading the choices before forming a prediction",
             "do": "Go back to predict-first and enforce it on every R&W question for a week. "
                   "Run the final-two protocol: name the word that kills the loser.",
             "dont": "Don't drill more questions of that type until predict-first is automatic.",
@@ -104,7 +104,7 @@ def diagnose(cause_counts: dict, total_logged: int, lucky_by_type: dict | None =
             "verdict": "Content",
             "do": "Targeted rule study on that exact skill, then 20 fresh questions of only "
                   "that type.",
-            "dont": "Don't mix practice — you learn a rule by seeing it fifteen times in a row.",
+            "dont": "Don't mix practice, you learn a rule by seeing it fifteen times in a row.",
             "severity": 2,
         })
 
@@ -115,7 +115,7 @@ def diagnose(cause_counts: dict, total_logged: int, lucky_by_type: dict | None =
                 "verdict": "Fragile knowledge",
                 "do": f"Treat these exactly like misses. Drill {question_type} until you're "
                       "answering it without the shaky flag.",
-                "dont": "Don't count these as correct — they're the questions that will flip "
+                "dont": "Don't count these as correct, they're the questions that will flip "
                         "on a harder module.",
                 "severity": 2,
             })
@@ -151,11 +151,11 @@ def can_retire(accuracy: float, sample_size: int) -> tuple[bool, str]:
     set of that type. Feeling better about it doesn't count."
     """
     if sample_size < RETIRE_SAMPLE:
-        return False, (f"Need {RETIRE_SAMPLE} fresh questions to judge — you have "
+        return False, (f"Need {RETIRE_SAMPLE} fresh questions to judge, you have "
                        f"{sample_size}.")
     if accuracy < RETIRE_ACCURACY:
         return False, f"{accuracy:.0f}% on the last {sample_size}. Needs {RETIRE_ACCURACY:.0f}%."
-    return True, f"{accuracy:.0f}% on the last {sample_size} — retire it."
+    return True, f"{accuracy:.0f}% on the last {sample_size}, retire it."
 
 
 # ---------------------------------------------------------------------------
@@ -194,7 +194,7 @@ def next_stage(stage: int, was_correct: bool) -> int | None:
 def should_schedule(is_correct: bool, confidence: str) -> bool:
     """
     The rule almost everyone breaks: log every question you weren't at least
-    90% confident on — even the ones you got right.
+    90% confident on, even the ones you got right.
     """
     return (not is_correct) or confidence == CONF_SHAKY
 

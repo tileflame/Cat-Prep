@@ -1,5 +1,5 @@
 """
-ui_kit.py — small reusable CustomTkinter building blocks.
+ui_kit.py, small reusable CustomTkinter building blocks.
 
 Every screen used to re-declare its own cards, pills and stat tiles with
 hard-coded hex values. These helpers keep the look consistent and each screen
@@ -237,7 +237,7 @@ def _cache_key(path: str, max_width: int, max_height, zoom: float):
 def decode_scaled(path: str, max_width: int = 860, max_height: int | None = None,
                   zoom: float = 1.0):
     """
-    Open and downscale an image. Pure PIL — no Tk — so it is safe to call from
+    Open and downscale an image. Pure PIL, no Tk, so it is safe to call from
     the background worker. Returns (PIL.Image, (w, h)) or (None, None).
     """
     try:
@@ -282,7 +282,7 @@ def load_scaled_image(path: str, max_width: int = 860, max_height: int | None = 
     """
     Cached (CTkImage, (w, h)) for a path, or (None, None) if unusable.
 
-    Same signature as before, so every caller keeps working — it is just no
+    Same signature as before, so every caller keeps working, it is just no
     longer doing the work twice.
     """
     if not path:
@@ -416,7 +416,7 @@ def format_duration(seconds) -> str:
     try:
         total = int(round(float(seconds)))
     except (TypeError, ValueError):
-        return "—"
+        return "-"
     if total < 0:
         total = 0
     if total < 3600:
@@ -429,7 +429,7 @@ def format_seconds_short(seconds) -> str:
     try:
         total = float(seconds)
     except (TypeError, ValueError):
-        return "—"
+        return "-"
     if total < 60:
         return f"{total:.0f}s"
     return f"{int(total // 60)}m {int(total % 60):02d}s"
@@ -438,7 +438,7 @@ def format_seconds_short(seconds) -> str:
 def format_timestamp(raw) -> str:
     """'2026-08-17 14:05:22' -> 'Aug 17, 2:05 PM'."""
     if not raw:
-        return "—"
+        return "-"
     text = str(raw)
     try:
         from datetime import datetime

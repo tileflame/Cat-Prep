@@ -1,5 +1,5 @@
 """
-history_screen.py — every sitting you've ever done, reopenable.
+history_screen.py, every sitting you've ever done, reopenable.
 
 This is the "view them even after you completed them" piece. Each row rebuilds
 into the full review screen, with the same score breakdown, routing explanation
@@ -156,7 +156,7 @@ class HistoryScreen(ctk.CTkFrame):
         meta = ui.row(left)
         meta.pack(anchor="w", pady=(3, 0))
         ui.caption(meta, ui.format_timestamp(session["started_at"]), size=11).pack(side="left")
-        ui.caption(meta, f"  ·  {session['section'] or '—'}", size=11).pack(side="left")
+        ui.caption(meta, f"  ·  {session['section'] or '-'}", size=11).pack(side="left")
         if session["duration_seconds"]:
             ui.caption(meta, f"  ·  {ui.format_duration(session['duration_seconds'])}",
                        size=11).pack(side="left")
@@ -170,7 +170,7 @@ class HistoryScreen(ctk.CTkFrame):
                 if index:
                     ui.caption(path, "→", size=11).pack(side="left", padx=4)
                 ui.pill(path,
-                        TIER_LABEL.get(tier, tier).split("—")[0].strip(),
+                        TIER_LABEL.get(tier, tier).split("-")[0].strip(),
                         TIER_COLOR.get(tier, C.TEXT_DIM)).pack(side="left")
 
         # ---- middle: score
@@ -229,7 +229,7 @@ class HistoryScreen(ctk.CTkFrame):
             "Delete all history",
             f"Delete all {len(sessions)} session(s) and {stats['total']:,} recorded "
             "answers?\n\n"
-            "Your imported question bank and your saved notes are NOT affected — "
+            "Your imported question bank and your saved notes are NOT affected, "
             "only your practice history and statistics.\n\n"
             "This cannot be undone.",
         )

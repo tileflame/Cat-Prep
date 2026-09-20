@@ -1,11 +1,11 @@
 """
-desmos_window.py — opens the Desmos graphing calculator.
+desmos_window.py, opens the Desmos graphing calculator.
 
 Two problems this file has now solved:
 
 1. The README noted the app crashed on a second click. The old class launched a
    browser from ``__init__`` with no guard, and the quiz screen then called
-   ``winfo_exists()`` on the returned object — which is not a widget.
+   ``winfo_exists()`` on the returned object, which is not a widget.
 
 2. Chrome's ``--app=`` mode reuses whatever size that profile last used, which
    in practice meant Desmos opened maximised over the whole screen. It now gets
@@ -89,7 +89,7 @@ def _screen_size(parent=None) -> tuple[int, int]:
 
 
 class DesmosWindow:
-    """Not a real window — a guarded launcher, kept as a class for compatibility."""
+    """Not a real window, a guarded launcher, kept as a class for compatibility."""
 
     _last_launch = 0.0
     COOLDOWN_SECONDS = 1.5

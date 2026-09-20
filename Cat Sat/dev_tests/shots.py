@@ -46,7 +46,7 @@ _demo.save()
 
 @atexit.register
 def _drop_demo_profile(_p=PROFILE_PATH):
-    """Must not outlive the run — see the note in dev_tests/test_web.py."""
+    """Must not outlive the run, see the note in dev_tests/test_web.py."""
     try:
         os.remove(_p)
     except OSError:

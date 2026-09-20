@@ -1,5 +1,5 @@
 """
-Launcher — build the question bank from the PDFs in Cat Sat/pdfs/.
+Launcher, build the question bank from the PDFs in Cat Sat/pdfs/.
 
 Runs sat_importer.py from inside the "Cat Sat" folder, which is where it expects
 to write database/questions.db and images/. Equivalent to:

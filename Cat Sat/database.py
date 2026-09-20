@@ -1,5 +1,5 @@
 """
-database.py — schema creation, repair and migration.
+database.py, schema creation, repair and migration.
 
 Two databases, on purpose:
 
@@ -61,7 +61,7 @@ def _apply_pragmas(conn: sqlite3.Connection, *, readonly: bool = False) -> None:
     Run once per connection, not per query.
 
     The old code opened a new connection for every single read and set
-    ``PRAGMA journal_mode = WAL`` on each one — WAL is a persistent property of
+    ``PRAGMA journal_mode = WAL`` on each one, WAL is a persistent property of
     the database file, so re-setting it thousands of times was pure overhead
     (it forces a lock and a header check every time).
     """
@@ -86,13 +86,20 @@ def _apply_pragmas(conn: sqlite3.Connection, *, readonly: bool = False) -> None:
 
 _LOCAL = threading.local()
 
+#: Every thread's pool dict, so a database can be REPLACED underneath a running
+#: server. close_pool() below is thread-local, which is right for shutdown and
+#: useless here: the request threads keep their handles open, and on Windows an
+#: open handle makes the file impossible to delete.
+_ALL_POOLS: list[dict] = []
+_POOLS_LOCK = threading.Lock()
+
 
 def _file_identity(path: str):
     """
     (inode, device) for the file behind a path, or None if it is gone.
 
-    A pooled connection keeps working against a *deleted* file — the OS keeps
-    the inode alive for the open handle — so reads silently return stale or
+    A pooled connection keeps working against a *deleted* file, the OS keeps
+    the inode alive for the open handle, so reads silently return stale or
     empty results. That bites whenever the database is replaced underneath the
     app: the cleanup script removing an empty questions.db, sat_importer.py
     rebuilding the bank while the app is open, or a test swapping files around.
@@ -109,6 +116,8 @@ def _pooled(path, *, readonly: bool = False) -> sqlite3.Connection:
     pool = getattr(_LOCAL, "pool", None)
     if pool is None:
         pool = _LOCAL.pool = {}
+        with _POOLS_LOCK:
+            _ALL_POOLS.append(pool)
     key = str(path)
     identity = _file_identity(key)
 
@@ -130,6 +139,27 @@ def _pooled(path, *, readonly: bool = False) -> sqlite3.Connection:
     # Re-stat: the file exists now even if it did not a moment ago.
     pool[key] = (conn, _file_identity(key))
     return conn
+
+
+def close_all_pools() -> None:
+    """
+    Drop EVERY thread's connections, not just this one's.
+
+    sqlite3 connections are created with check_same_thread, so closing another
+    thread's handle raises rather than working. Clearing the reference is what
+    actually matters: the connection closes when it is collected, and the file
+    it held is free again.
+    """
+    import gc
+    with _POOLS_LOCK:
+        for pool in _ALL_POOLS:
+            for conn, _identity in list(pool.values()):
+                try:
+                    conn.close()
+                except Exception:                         # noqa: BLE001
+                    pass                                  # wrong thread, or already shut
+            pool.clear()
+    gc.collect()
 
 
 def reset_pool() -> None:
@@ -246,12 +276,19 @@ def question_bank_is_usable() -> tuple[bool, str]:
         with question_conn() as conn:
             cols = _table_columns(conn, "questions")
             if not cols:
-                return False, "No question bank yet — run sat_importer.py first."
+                return False, (f"No question bank in {QUESTION_DB.parent} yet.")
             if "rationale" not in cols or "is_open_ended" not in cols:
                 return False, "Question bank schema is out of date. Restart the app to repair it."
             count = conn.execute("SELECT COUNT(*) FROM questions").fetchone()[0]
             if count == 0:
-                return False, "Question bank is empty — put PDFs in pdfs/ and run sat_importer.py."
+                # Name the FOLDER. An empty bank and "you are running a
+                # different copy of the app than you think" look identical from
+                # the outside, and the second is far more common once there is
+                # more than one folder on the machine. The path turns a mystery
+                # into something you can check in two seconds.
+                return False, (f"The question bank in {QUESTION_DB.parent} is empty. "
+                               f"If your questions are somewhere else, you are "
+                               f"running a different copy of the app.")
             return True, f"{count:,} questions loaded"
     except sqlite3.DatabaseError as exc:
         return False, f"Could not open the question bank: {exc}"

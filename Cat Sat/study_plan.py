@@ -1,5 +1,5 @@
 """
-study_plan.py — what to study, and when.
+study_plan.py, what to study, and when.
 
 Every plan this app shows comes from one of two places:
 
@@ -8,7 +8,7 @@ Every plan this app shows comes from one of two places:
      eight domain performance bands into a week-by-week and day-by-day plan.
 
   2. An optional hand-written plan in `personal_plan.py`. That file is not part
-     of the published app and is in .gitignore — a hand-written plan belongs to
+     of the published app and is in .gitignore, a hand-written plan belongs to
      one student and is wrong for everybody else. If it is absent, which is the
      normal case, nothing here breaks.
 
@@ -45,19 +45,19 @@ def has_personal_plan() -> bool:
 
 TIERS = {
     1: {
-        "label": "Must do — this is where the points are",
+        "label": "Must do, this is where the points are",
         "color_key": "GREEN",
         "items": [
             "★ Work your weakest domain, weighted by how much of the section it is. "
             "A weak domain worth 28% of the section beats an equally weak one worth 15%.",
             "★ Give a banked section zero minutes. Superscore keeps your best section "
-            "forever — once it is top-band everywhere, studying it can only take time "
+            "forever, once it is top-band everywhere, studying it can only take time "
             "from the section that can still move.",
             "★ Predict before you read the choices. Every R&W question, every time. "
             "Wrong answers are written to sound reasonable; you beat them by already "
             "knowing what you are looking for.",
             "Keep an error log after every session, including lucky guesses, and write "
-            "EXECUTABLE fixes. Never 'read more carefully' — that restates the error "
+            "EXECUTABLE fixes. Never 'read more carefully', that restates the error "
             "instead of correcting it.",
             "Underline what a Math question actually asks, and re-read the last line "
             "before you answer. Most Math misses at a high score are read-wrong, not "
@@ -67,18 +67,18 @@ TIERS = {
         ],
     },
     2: {
-        "label": "High value — after Tier 1 is running",
+        "label": "High value, after Tier 1 is running",
         "color_key": "BLUE",
         "items": [
             "Timed modules under real conditions. Use the whole clock; never finish early.",
             "Spaced redos of everything you got wrong, at +1, +3 and +10 days.",
-            "A calculator-fluency session, then short maintenance — not more.",
+            "A calculator-fluency session, then short maintenance, not more.",
             "Vocabulary built from words YOU missed, not a generic list.",
             "Full practice tests, with a review at least as long as the test.",
         ],
     },
     3: {
-        "label": "Nice to have — only if Tiers 1 and 2 are genuinely done",
+        "label": "Nice to have, only if Tiers 1 and 2 are genuinely done",
         "color_key": "AMBER",
         "items": [
             "Method drilling on question types you already pass.",
@@ -87,7 +87,7 @@ TIERS = {
         ],
     },
     4: {
-        "label": "STOP — these actively cost you points",
+        "label": "STOP, these actively cost you points",
         "color_key": "RED",
         "items": [
             "Studying a section that is already banked.",
@@ -140,7 +140,7 @@ def has_profile() -> bool:
 
 
 def _empty_day(day: date) -> dict:
-    return {"headline": "No plan yet", "hours": "—", "week": None, "source": "none",
+    return {"headline": "No plan yet", "hours": "-", "week": None, "source": "none",
             "tasks": [{"minutes": 0, "label": "Set up your plan",
                        "detail": NO_PROFILE_MESSAGE, "action": "manual", "params": {}}]}
 
@@ -164,7 +164,7 @@ def active_day_plan(day: date) -> dict:
     if plan:
         if day in plan["days"]:
             return plan["days"][day]
-        return {"headline": "Outside your planned window", "hours": "—",
+        return {"headline": "Outside your planned window", "hours": "-",
                 "tasks": [], "week": None, "source": "none"}
     if _personal:
         return _personal.day_plan(day)

@@ -12,7 +12,7 @@ Run from inside the "Cat Sat" folder:
 It is deliberately paranoid:
   * only deletes PNGs whose filename matches the synthetic pattern
     (re00001.png / ma00042_rationale.png) AND whose dimensions are exactly
-    900x320 — the fixed size the generator used. Real College Board crops are
+    900x320, the fixed size the generator used. Real College Board crops are
     rendered at 200 DPI and are never exactly that size.
   * only deletes questions.db if it contains ZERO questions. If you have since
     run sat_importer.py successfully, your bank is left completely alone.
@@ -98,12 +98,12 @@ def main():
 
     count = question_count()
     if count is None:
-        print("\ndatabase/questions.db: not present — nothing to clean")
+        print("\ndatabase/questions.db: not present, nothing to clean")
     elif count == 0:
         os.remove(QUESTION_DB)
-        print("\ndatabase/questions.db: contained 0 questions (a test leftover) — deleted")
+        print("\ndatabase/questions.db: contained 0 questions (a test leftover), deleted")
     else:
-        print(f"\ndatabase/questions.db: contains {count:,} questions — LEFT UNTOUCHED")
+        print(f"\ndatabase/questions.db: contains {count:,} questions, LEFT UNTOUCHED")
 
     print("\nDone. Next:")
     print('   cd "Cat Sat"')

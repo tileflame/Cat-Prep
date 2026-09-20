@@ -1,5 +1,5 @@
 """
-user_profile.py — who is studying, when they test, and what they have scored.
+user_profile.py, who is studying, when they test, and what they have scored.
 
 Everything the planner needs about one student lives in a single JSON file at
 `database/profile.json`. It is deliberately plain text: you can read it, edit
@@ -22,13 +22,14 @@ A frozen PyInstaller app has no folders. Every module lives in one flat archive
 keyed by name, so two modules called `profile` are one collision, and if the
 standard library's copy won, `from profile import Profile` would raise
 ImportError on a stranger's computer while working perfectly on mine. The data
-file is still profile.json — only the module name changed, so no existing
+file is still profile.json, only the module name changed, so no existing
 profile is affected.
 """
 
 from __future__ import annotations
 
 import json
+import os
 from dataclasses import dataclass, field, asdict
 from datetime import date, datetime
 
@@ -76,6 +77,27 @@ def _as_date(value):
     return None
 
 
+def _preserve_unreadable(path) -> None:
+    """
+    Copy a profile.json that will not parse to profile.broken-<n>.json.
+
+    The file holds every score report the student ever uploaded, and those came
+    from PDFs they may no longer have. It is never worth silently replacing.
+    Numbered rather than overwritten so a second failure cannot destroy the
+    evidence from the first.
+    """
+    try:
+        for n in range(1, 100):
+            backup = path.with_name(f"{path.stem}.broken-{n}.json")
+            if not backup.exists():
+                backup.write_bytes(path.read_bytes())
+                print(f"[profile] {path.name} could not be read, kept a copy at "
+                      f"{backup.name} before starting a new one")
+                return
+    except OSError:
+        pass
+
+
 @dataclass
 class Profile:
     name: str = ""
@@ -89,19 +111,39 @@ class Profile:
 
     @classmethod
     def load(cls, path=None) -> "Profile | None":
+        """The saved profile, or None if there is not one that can be read."""
         path = path or PROFILE_PATH
         try:
             raw = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, ValueError):
+        except OSError:
+            return None                      # genuinely not there: fine
+        except ValueError:
+            # There IS a file and it will not parse. That is a different thing
+            # from having no profile, and it used to be treated the same — the
+            # caller did `Profile.load() or Profile()` and then saved, writing a
+            # blank profile over the damaged one and taking every score report
+            # with it. Keep a copy before anyone can do that.
+            _preserve_unreadable(path)
             return None
         known = {f for f in cls.__dataclass_fields__}
         return cls(**{k: v for k, v in raw.items() if k in known})
 
     def save(self, path=None) -> None:
+        """
+        Write the profile atomically.
+
+        A plain write_text truncates the file first, so a crash or a full disk
+        part way through leaves a half-written profile.json, which then fails
+        to parse, which is exactly the case above. Writing to a temp file and
+        renaming means the real file is either the old one or the new one and
+        never a fragment of either.
+        """
         path = path or PROFILE_PATH
         path.parent.mkdir(parents=True, exist_ok=True)
         payload = json.loads(json.dumps(asdict(self), default=_iso))
-        path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+        temp = path.with_name(path.name + ".tmp")
+        temp.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+        os.replace(temp, path)               # atomic on Windows and POSIX
 
     # --------------------------------------------------------------- input
 
@@ -133,11 +175,11 @@ class Profile:
         return out
 
     def official_reports(self) -> list[dict]:
-        """Real sittings only — practice reports cannot be superscored."""
+        """Real sittings only, practice reports cannot be superscored."""
         return [r for r in self.reports if r.get("is_official")]
 
     def best_sections(self, official_only: bool = True) -> dict[str, int]:
-        """Best score per section — this is what a superscore is made of."""
+        """Best score per section, this is what a superscore is made of."""
         pool = self.official_reports() if official_only else self.reports
         if not pool and official_only:
             pool = self.reports
@@ -198,19 +240,19 @@ class Profile:
             section = SECTION_OF[name]
             band = domains.get(name)
             if section in banked:
-                weight, verdict = 0.0, "Banked — this section is finished"
+                weight, verdict = 0.0, "Banked, this section is finished"
             elif not band:
-                weight, verdict = 0.5, "No data yet — import a score report"
+                weight, verdict = 0.5, "No data yet, import a score report"
             else:
                 midpoint = (band["low"] + band["high"]) / 2
                 gap = max(0.0, (800 - midpoint) / 400)          # 0 at 800, 1 at 400
                 weight = round(gap * DOMAIN_SHARE[name] * 10, 3)
                 if band["low"] >= TOP_BAND_LOW:
-                    verdict = "Top band — leave it alone"
+                    verdict = "Top band, leave it alone"
                 elif gap > 0.45:
-                    verdict = "Weakest — this is where the points are"
+                    verdict = "Weakest, this is where the points are"
                 else:
-                    verdict = "Middle — after the weakest ones"
+                    verdict = "Middle, after the weakest ones"
             ranked.append({
                 "domain": name, "section": section, "band": band,
                 "weight": weight, "verdict": verdict,
@@ -231,7 +273,7 @@ class Profile:
 
         `already_worked` stops that preference firing twice. A rule-based domain
         that has already had its own dedicated week has had what a short window
-        can give it — a second short window should go to the domain that is
+        can give it, a second short window should go to the domain that is
         actually costing the most points.
         """
         already_worked = already_worked or set()

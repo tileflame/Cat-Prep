@@ -1,9 +1,9 @@
 """
-models.py — the Question object and answer-grading rules.
+models.py, the Question object and answer-grading rules.
 
 The old code passed raw sqlite tuples around and indexed them by position
 (``q[5]`` for the correct answer, ``q[7]`` for the open-ended flag...). That
-made it impossible to add a field — which is why skill-level analytics were
+made it impossible to add a field, which is why skill-level analytics were
 missing. Everything now flows through the Question dataclass instead.
 """
 
@@ -187,6 +187,21 @@ def _split_accepted(correct_raw: str) -> list[str]:
     text = str(correct_raw or "").strip()
     if not text:
         return []
+    # A comma means two different things, and getting them confused grades a
+    # question exactly backwards.
+    #
+    #   ".5, 1/2"  -> two ways of writing ONE answer; both accepted   (115 of
+    #                 these in a real 3,713-question bank)
+    #   "1,200"    -> ONE number with a thousands separator           (none in
+    #                 that bank, but _KEY_IS_CLEAN accepts the shape)
+    #
+    # Splitting "1,200" gives ["1", "200"], so entering 1200 is marked WRONG
+    # and entering 1 or 200 is marked RIGHT — the failure this file's own
+    # comment calls the worst possible bug in a study tool, because it teaches
+    # the opposite of the truth. A number whose commas are all followed by
+    # exactly three digits is a single value; anything else is a list.
+    if _KEY_THOUSANDS.match(text):
+        return [text.replace(",", "")]
     parts = re.split(r"\s*(?:,|;|\bor\b|\band\b)\s*", text, flags=re.IGNORECASE)
     return [p for p in (part.strip() for part in parts) if p]
 
@@ -204,6 +219,9 @@ def _split_accepted(correct_raw: str) -> list[str]:
 #
 # This repairs the key ON READ. sat_importer.py is not touched and its output
 # is not rewritten; nothing here runs at import time.
+
+#: A single number written with thousands separators: 1,200 / 12,000 / -3,000.5
+_KEY_THOUSANDS = re.compile(r"^[-+]?\d{1,3}(?:,\d{3})+(?:\.\d+)?$")
 
 _KEY_IS_CLEAN = re.compile(r"^[-+]?[\d.,/\s+-]+$")
 # "is 74. The y-intercept…"  ->  74        (first number only, anchored at the
@@ -248,7 +266,7 @@ def answers_match(user_answer, correct_answer, is_open_ended: bool = False) -> b
     Compare a student's answer to the key.
 
     Multiple choice is a simple case-insensitive letter match. Grid-ins compare
-    numerically so 0.5, .5 and 1/2 all count as the same answer — which the old
+    numerically so 0.5.5 and 1/2 all count as the same answer, which the old
     string comparison got wrong.
     """
     user = _clean(user_answer)

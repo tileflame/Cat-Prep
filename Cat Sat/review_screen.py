@@ -1,5 +1,5 @@
 """
-review_screen.py — what you see after a test, and whenever you reopen one.
+review_screen.py, what you see after a test, and whenever you reopen one.
 
 The original review screen showed a flat list of right/wrong. This one answers
 the questions that actually change how you study next:
@@ -10,7 +10,7 @@ the questions that actually change how you study next:
   * Show me the rationale for everything I got wrong or flagged.
 
 It renders from a TestSummary, which can come straight from a finished test or
-be rebuilt from the database — so the same screen serves both "just finished"
+be rebuilt from the database, so the same screen serves both "just finished"
 and "open a test from three weeks ago".
 """
 
@@ -115,7 +115,7 @@ class ReviewScreen(ctk.CTkFrame):
         head = ui.row(band)
         head.pack(fill="x", padx=20, pady=(16, 4))
         ui.title(head, "Estimated score", size=17).pack(side="left")
-        ui.pill(head, "estimate — not an official conversion", C.TEXT_FAINT).pack(side="left", padx=10)
+        ui.pill(head, "estimate, not an official conversion", C.TEXT_FAINT).pack(side="left", padx=10)
 
         tiles = ui.row(band)
         tiles.pack(fill="x", padx=14, pady=(6, 16))
@@ -165,7 +165,7 @@ class ReviewScreen(ctk.CTkFrame):
                 chip = ui.card(strip, fg_color=C.SURFACE_2, corner_radius=10)
                 chip.pack(side="left", padx=(0, 8))
                 ui.caption(chip, f"MODULE {module.module_number} · "
-                                 f"{TIER_LABEL.get(module.tier, module.tier).split('—')[0].strip()}",
+                                 f"{TIER_LABEL.get(module.tier, module.tier).split('-')[0].strip()}",
                            size=10).pack(anchor="w", padx=14, pady=(8, 0))
                 ctk.CTkLabel(chip, text=f"{module.correct}/{module.total}"
                                         f"   ({module.raw_accuracy * 100:.0f}%)",
@@ -288,7 +288,7 @@ class ReviewScreen(ctk.CTkFrame):
         if slow:
             ui.caption(card,
                        f"{len(slow)} question(s) took more than "
-                       f"{SLOW_MULTIPLIER:g}× the pacing target — filter to 'Slow' below.",
+                       f"{SLOW_MULTIPLIER:g}× the pacing target, filter to 'Slow' below.",
                        size=11, color=C.ORANGE).pack(anchor="w", padx=20, pady=(0, 16))
         else:
             ui.caption(card, "No questions ran badly over time. Good pacing.",
@@ -414,7 +414,7 @@ class ReviewScreen(ctk.CTkFrame):
 
         middle = ui.row(row)
         middle.pack(side="left", expand=True, fill="x", padx=16)
-        shown = record.selected_answer or "—"
+        shown = record.selected_answer or "-"
         ctk.CTkLabel(middle, text=f"You: {shown}", font=ui.f(13, "bold"),
                      text_color=C.GREEN if record.is_correct else C.RED,
                      anchor="w").pack(anchor="w")
@@ -443,7 +443,7 @@ class ReviewScreen(ctk.CTkFrame):
     def show_explanation(self, record):
         question = record.question
         window = ctk.CTkToplevel(self)
-        window.title(f"Explanation — {question.question_id}")
+        window.title(f"Explanation, {question.question_id}")
         window.geometry("940x760")
         window.configure(fg_color=C.BG)
         try:
@@ -466,7 +466,7 @@ class ReviewScreen(ctk.CTkFrame):
         answer_line = ui.row(window)
         answer_line.pack(fill="x", padx=22, pady=(8, 4))
         ctk.CTkLabel(answer_line,
-                     text=f"Your answer: {record.selected_answer or '— skipped —'}",
+                     text=f"Your answer: {record.selected_answer or '(skipped)'}",
                      font=ui.f(13, "bold"),
                      text_color=C.GREEN if record.is_correct else C.RED).pack(side="left")
         ctk.CTkLabel(answer_line, text=f"Correct answer: {question.correct_answer}",
@@ -540,7 +540,7 @@ class ReviewScreen(ctk.CTkFrame):
                 footer, f"🔁  Redo {len(wrong)}",
                 lambda: self.controller.start_review_session(
                     [r.question for r in wrong],
-                    label=f"Redo — {self.summary.label}",
+                    label=f"Redo, {self.summary.label}",
                 ),
                 width=130,
             ).pack(side="right", padx=8)

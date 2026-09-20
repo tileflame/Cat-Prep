@@ -1,5 +1,5 @@
 """
-launcher.py — the entry point of the bundled app.
+launcher.py, the entry point of the bundled app.
 
 run.py is the entry point when you have Python and a folder of source. This is
 the entry point when you have a single downloaded file and nothing else, and
@@ -8,7 +8,7 @@ the difference between the two is entirely about paths.
 WHY THIS FILE EXISTS
 --------------------
 A frozen app runs with the working directory set to wherever the user happened
-to launch it from — the Desktop, Downloads, anywhere. But sat_importer.py
+to launch it from, the Desktop, Downloads, anywhere. But sat_importer.py
 resolves "pdfs", "images" and "database/questions.db" relative to the current
 directory, and config.py builds DATA_DIR the same way. Left alone, a bundled
 app would scatter a question bank across whatever folder the icon was
@@ -20,7 +20,7 @@ behaves exactly as it does from source.
 
 WHERE THE DATA GOES
 -------------------
-Next to the executable, if that location is writable — this keeps the app
+Next to the executable, if that location is writable, this keeps the app
 self-contained, which is what someone expects from a single downloaded file,
 and makes "delete the folder" a complete uninstall.
 
@@ -38,7 +38,7 @@ APP_NAME = "CatPrep"
 
 
 def _frozen_root() -> Path:
-    """The folder the user actually sees — beside the .exe, or beside the .app."""
+    """The folder the user actually sees, beside the .exe, or beside the .app."""
     exe = Path(sys.executable).resolve()
     if sys.platform == "darwin" and ".app/Contents/" in str(exe):
         # …/CatPrep.app/Contents/MacOS/CatPrep -> the folder holding the .app
@@ -84,7 +84,7 @@ def main() -> int:
     else:
         sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "Cat Sat"))
 
-    print(f"{APP_NAME} — data folder: {data_dir}")
+    print(f"{APP_NAME}, data folder: {data_dir}")
 
     import server
     srv, url = server.create_server()

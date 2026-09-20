@@ -1,10 +1,10 @@
 """
-notes_window.py — scratchpad that actually remembers what you wrote.
+notes_window.py, scratchpad that actually remembers what you wrote.
 
 The original version was a pretty text box whose contents vanished the moment
 you closed it. Notes are now stored per question id in progress.db, so the note
 you left on a tricky Craft and Structure item is waiting for you the next time
-that question appears — and shows up in the review screen too.
+that question appears, and shows up in the review screen too.
 """
 
 from __future__ import annotations

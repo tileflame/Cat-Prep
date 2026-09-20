@@ -1,5 +1,5 @@
 """
-quiz_screen.py — the test-taking surface.
+quiz_screen.py, the test-taking surface.
 
 Upgrades over the original screen:
   * knows which module and tier it is in, and shows a progress bar
@@ -92,13 +92,13 @@ class QuizScreen(ctk.CTkFrame):
         left = ui.row(top)
         left.pack(side="left")
 
-        heading = context_label or f"{self.plan.section} — Module {self.plan.module_number}"
+        heading = context_label or f"{self.plan.section}, Module {self.plan.module_number}"
         self.context_label = ctk.CTkLabel(left, text=heading, font=ui.f(17, "bold"),
                                           text_color=C.TEXT)
         self.context_label.pack(side="left")
 
         if self.plan.tier and self.plan.tier in TIER_LABEL:
-            ui.pill(left, TIER_LABEL[self.plan.tier].split("—")[0].strip(),
+            ui.pill(left, TIER_LABEL[self.plan.tier].split("-")[0].strip(),
                     C.BLUE).pack(side="left", padx=10)
 
         self.q_num_label = ctk.CTkLabel(left, text="", font=ui.f(13),
@@ -280,7 +280,7 @@ class QuizScreen(ctk.CTkFrame):
         """
         Move to a different question. Does the expensive work (image decode).
 
-        State-only changes — flagging, marking not-sure, picking a choice — go
+        State-only changes, flagging, marking not-sure, picking a choice, go
         through _refresh_state() instead, which touches no images at all. The old
         build called this method for every toggle and re-decoded the PNG each
         time, which is where most of the lag came from.
@@ -442,7 +442,7 @@ class QuizScreen(ctk.CTkFrame):
     def toggle_shaky(self):
         """
         Mark that you weren't ≥90% confident. If you get it right anyway it is
-        logged as a lucky guess — the plan is emphatic that those are next
+        logged as a lucky guess, the plan is emphatic that those are next
         month's misses, not wins.
         """
         if self.current_idx in self.shaky:

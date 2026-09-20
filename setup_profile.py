@@ -1,10 +1,10 @@
 """
-setup_profile.py — first-run setup. Run this once, before anything else.
+setup_profile.py, first-run setup. Run this once, before anything else.
 
     python setup_profile.py
 
 It asks four things: your name, your score reports, your test dates, and your
-target. Everything else — which domains to work, in what order, on which days —
+target. Everything else, which domains to work, in what order, on which days,
 is worked out from your reports rather than guessed at.
 
 You can also run it non-interactively:
@@ -69,7 +69,7 @@ def load_reports(paths, profile):
 
 def interactive(profile):
     print(RULE)
-    print("  Cat Prep — setup")
+    print("  Cat Prep, setup")
     print(RULE)
     print("\nThis takes about two minutes and you only do it once.\n")
 
@@ -99,7 +99,7 @@ def interactive(profile):
             break
         when = _parse_day(answer)
         if not when:
-            print("  couldn't read that — try 2027-03-13")
+            print("  couldn't read that, try 2027-03-13")
             continue
         if when < date.today():
             print("  that is in the past; skipping")
@@ -135,7 +135,7 @@ def report_plan(profile):
 
     if summary["banked"]:
         names = " and ".join(summary["banked"])
-        print(f"\n  {names} is BANKED — top band across every domain, and superscore")
+        print(f"\n  {names} is BANKED, top band across every domain, and superscore")
         print("  keeps it forever. The plan gives it zero minutes. Every minute spent")
         print("  there is a minute taken from the section that can still move.")
 
@@ -155,13 +155,13 @@ def report_plan(profile):
 
     print(f"\n  {len(plan['weeks'])} weeks, {len(plan['days'])} days planned:\n")
     for week in plan["weeks"]:
-        focus = ", ".join(week["focus_domains"]) or "—"
+        focus = ", ".join(week["focus_domains"]) or "-"
         print(f"    W{week['number']}  {week['start']}  {week['kind']:<6} {focus}")
 
     today = plan["generated_for"]
     if today in plan["days"]:
         day = plan["days"][today]
-        print(f"\n  Today ({today}) — {day['headline']}  ·  {day['hours']}")
+        print(f"\n  Today ({today}), {day['headline']}  ·  {day['hours']}")
         for task in day["tasks"]:
             print(f"    {task['minutes']:>3} min  {task['label']}")
 
@@ -210,7 +210,7 @@ def main():
     profile.save()
     from user_profile import PROFILE_PATH
     print(f"\n  Saved to {PROFILE_PATH}")
-    print("  It is plain JSON — open it and edit anything that is wrong.")
+    print("  It is plain JSON, open it and edit anything that is wrong.")
 
     report_plan(profile)
     print("\n" + RULE)

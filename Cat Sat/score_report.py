@@ -1,10 +1,10 @@
 """
-score_report.py — read an official College Board SAT score report PDF.
+score_report.py, read an official College Board SAT score report PDF.
 
 This is what lets the app plan for someone other than its author. You hand it
 the PDF College Board gives you after a real sitting (or a Bluebook practice
-test) and it returns your total, your two section scores, and — the part that
-actually matters — the performance band for each of the eight content domains.
+test) and it returns your total, your two section scores, and, the part that
+actually matters, the performance band for each of the eight content domains.
 
 Those eight bands are the whole point. A total score tells you nothing you can
 act on. "Craft and Structure: 550-600, and it is 28% of the section" tells you
@@ -28,6 +28,20 @@ from datetime import date
 
 RW = "Reading and Writing"
 MATH = "Math"
+
+#: The dash characters College Board actually prints between the two ends of a
+#: score range, as a regex character class. Three of them, because which one you
+#: get depends on the export: the practice report uses a hyphen, the official
+#: one an en dash, and some PDFs an em dash.
+#:
+#: These are PATTERN DATA, not wording. A pass that rewrote the app's own em
+#: dashes into hyphens reached into these two patterns as well and turned
+#: "[-–—\d]" into "[-–-\d]", which is a character range running from en dash to
+#: \d and is not a legal regex at all. Every score-report import died on import
+#: of this module. Keeping the class in one named constant means it reads as
+#: data, and there is one place to look if it ever happens again.
+DASHES = "[-–—]"
+DASHES_D = "[-–—\\d]"
 
 RW_DOMAINS = [
     "Information and Ideas",
@@ -97,7 +111,7 @@ def extract_text(pdf_path: str) -> str:
             raise ScoreReportError(f"pdftotext failed on {pdf_path}: {exc}") from exc
 
     raise ScoreReportError(
-        "No PDF reader available. Install PyMuPDF (pip install PyMuPDF) — the "
+        "No PDF reader available. Install PyMuPDF (pip install PyMuPDF), the "
         "question importer needs it anyway.")
 
 
@@ -115,7 +129,11 @@ def _parse_domains(text: str) -> dict[str, dict[str, int]]:
     """
     token = re.compile(
         r"(" + "|".join(re.escape(d) for d in ALL_DOMAINS) + r")"
-        r"|Performance:\s*(\d{3})\s*[-–—]\s*(\d{3})")
+        # DASHES is the set of dash characters College Board actually uses in
+        # its exports. It is pattern data, not prose: the em dash in it is there
+        # to MATCH an em dash printed in a PDF, so it must never be normalised
+        # away the way the app's own wording was.
+        r"|Performance:\s*(\d{3})\s*" + DASHES + r"\s*(\d{3})")
 
     pending: list[str] = []
     found: dict[str, dict[str, int]] = {}
@@ -142,7 +160,7 @@ def _parse_scores(text: str) -> tuple[int | None, dict[str, int]]:
     sections: dict[str, int] = {}
     # A section score is a bare 3-digit multiple of 10 in [200, 800] that is not
     # part of a range like "610-670" or a label like "200-800".
-    for match in re.finditer(r"(?<![-–—\d])\b([2-8]\d0)\b(?![-–—\d])", text):
+    for match in re.finditer(r"(?<!" + DASHES_D + r")\b([2-8]\d0)\b(?!" + DASHES_D + r")", text):
         value = int(match.group(1))
         before = text[max(0, match.start() - 400):match.start()]
         if RW in before and before.rindex(RW) > (before.rindex(MATH) if MATH in before else -1):
@@ -194,7 +212,7 @@ def parse_score_report(pdf_path: str) -> dict:
 
     Returns a dict with `label`, `date`, `total`, `sections` and `domains`.
     Anything the PDF does not contain comes back as None or an empty dict
-    rather than a guess — a practice score report, for instance, draws its
+    rather than a guess, a practice score report, for instance, draws its
     domain performance as bars rather than text, so `domains` will be empty
     and that is reported honestly instead of invented.
     """
@@ -223,7 +241,7 @@ def parse_score_report(pdf_path: str) -> dict:
 def describe(report: dict) -> str:
     """A short human-readable summary, for the setup wizard and the CLI."""
     lines = [f"{report['label']}"
-             + (f" — {report['date'].isoformat()}" if report.get("date") else "")]
+             + (f", {report['date'].isoformat()}" if report.get("date") else "")]
     if report.get("total"):
         lines.append(f"  Total {report['total']}")
     for name in (RW, MATH):
@@ -236,7 +254,7 @@ def describe(report: dict) -> str:
             if band:
                 lines.append(f"    {name:<34} {band['low']}-{band['high']}")
     else:
-        lines.append("  (no domain bands in this PDF — practice reports draw them "
+        lines.append("  (no domain bands in this PDF, practice reports draw them "
                      "as bars, so only the scores could be read)")
     return "\n".join(lines)
 

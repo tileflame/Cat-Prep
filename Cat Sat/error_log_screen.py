@@ -1,13 +1,13 @@
 """
-error_log_screen.py — Pass 2 and Pass 3 of the three-pass review.
+error_log_screen.py, Pass 2 and Pass 3 of the three-pass review.
 
 Section 07 of the plan calls this "the engine of the whole plan":
 
     "Every miss and every lucky guess gets a row. For each one, write the
-     one-sentence rule you'll apply next time — not a summary of the
+     one-sentence rule you'll apply next time, not a summary of the
      explanation, an instruction to your future self."
 
-So this screen shows exactly those rows — misses AND lucky guesses — and for
+So this screen shows exactly those rows, misses AND lucky guesses, and for
 each one asks two things:
 
     WHY did you miss it?   (one of the 11 root-cause codes)
@@ -132,7 +132,7 @@ class ErrorLogScreen(ctk.CTkFrame):
         """
         Everything logged across recent sessions.
 
-        One query, not one per session — the old version called
+        One query, not one per session, the old version called
         logged_attempts() in a loop over 25 sessions.
         """
         return attempt_repo.recent_logged(limit=120)
@@ -170,7 +170,7 @@ class ErrorLogScreen(ctk.CTkFrame):
 
         if tagged_total < 4:
             ui.caption(card,
-                       f"Tag at least 4 questions to get a diagnosis — {tagged_total} tagged "
+                       f"Tag at least 4 questions to get a diagnosis, {tagged_total} tagged "
                        "so far. Untagged rows can't tell you anything.",
                        size=12, color=C.ORANGE).pack(anchor="w", padx=20, pady=(0, 16))
             return
@@ -187,7 +187,7 @@ class ErrorLogScreen(ctk.CTkFrame):
         findings = diagnostic.diagnose(counts, tagged_total, lucky)
         if not findings:
             ui.caption(card,
-                       "No single cause dominates yet. Keep logging — the pattern usually "
+                       "No single cause dominates yet. Keep logging, the pattern usually "
                        "shows up over a week, not a session.",
                        size=12).pack(anchor="w", padx=20, pady=(4, 16))
             return
@@ -228,7 +228,7 @@ class ErrorLogScreen(ctk.CTkFrame):
         ctk.CTkLabel(top, text="🍀 LUCKY" if lucky else "❌ MISS",
                      font=ui.f(12, "bold"),
                      text_color=C.PURPLE if lucky else C.RED).pack(side="left")
-        ui.caption(top, f"  {row.get('domain') or '—'}  ·  {row.get('skill') or '—'}",
+        ui.caption(top, f"  {row.get('domain') or '-'}  ·  {row.get('skill') or '-'}",
                    size=12).pack(side="left", padx=6)
         difficulty = row.get("difficulty") or "Medium"
         ui.pill(top, difficulty, DIFFICULTY_COLOR.get(difficulty, C.TEXT_DIM)).pack(side="left")
@@ -248,17 +248,17 @@ class ErrorLogScreen(ctk.CTkFrame):
         # --- answers, stated plainly
         answers = ui.row(card)
         answers.pack(fill="x", padx=18, pady=(4, 2))
-        given = row.get("selected_answer") or "— skipped —"
+        given = row.get("selected_answer") or "(skipped)"
         ctk.CTkLabel(answers, text=f"Your answer:  {given}", font=ui.f(13, "bold"),
                      text_color=C.GREEN if row["is_correct"] else C.RED).pack(side="left")
-        ctk.CTkLabel(answers, text=f"Correct answer:  {row.get('correct_answer') or '—'}",
+        ctk.CTkLabel(answers, text=f"Correct answer:  {row.get('correct_answer') or '-'}",
                      font=ui.f(13, "bold"), text_color=C.GREEN).pack(side="left", padx=24)
         if row.get("eliminated"):
             ui.caption(answers, f"crossed out: {row['eliminated']}", size=11).pack(side="left")
 
         if lucky:
             ui.caption(card,
-                       "You got this right but weren't sure. It counts as a miss — fragile "
+                       "You got this right but weren't sure. It counts as a miss, fragile "
                        "knowledge flips on a harder module.",
                        size=11, color=C.PURPLE).pack(anchor="w", padx=18, pady=(2, 4))
 
@@ -287,7 +287,7 @@ class ErrorLogScreen(ctk.CTkFrame):
             chips.grid_columnconfigure(column, weight=1)
 
         # --- the executable sentence
-        ui.caption(card, "ONE SENTENCE — AN INSTRUCTION TO YOUR FUTURE SELF",
+        ui.caption(card, "ONE SENTENCE: AN INSTRUCTION TO YOUR FUTURE SELF",
                    size=10).pack(anchor="w", padx=18, pady=(6, 2))
 
         entry_row = ui.row(card)
@@ -335,7 +335,7 @@ class ErrorLogScreen(ctk.CTkFrame):
 
         if question is None:
             ui.caption(holder,
-                       f"Question {row['question_id']} is no longer in the bank — re-run "
+                       f"Question {row['question_id']} is no longer in the bank, re-run "
                        "sat_importer.py to restore it.",
                        size=11, color=C.ORANGE).pack(anchor="w")
             return
@@ -424,7 +424,7 @@ class ErrorLogScreen(ctk.CTkFrame):
         """
         text = var.get().strip()
         if not text:
-            status.configure(text="Write one sentence — it's the part that makes it stick.",
+            status.configure(text="Write one sentence, it's the part that makes it stick.",
                              text_color=C.ORANGE)
             return
 
@@ -432,7 +432,7 @@ class ErrorLogScreen(ctk.CTkFrame):
         if any(phrase in lowered for phrase in BANNED_PHRASES) and len(text) < 60:
             status.configure(
                 text="That's a diagnosis, not an instruction. Name a specific, checkable "
-                     "action — if a stranger couldn't watch you and tell whether you did "
+                     "action, if a stranger couldn't watch you and tell whether you did "
                      "it, it isn't a rule.",
                 text_color=C.RED)
             return

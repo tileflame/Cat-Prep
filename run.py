@@ -1,5 +1,5 @@
 """
-Launcher — start Cat SAT.
+Launcher, start Cat SAT.
 
 Runs the local server and opens the app. The UI is a web page now, but it is
 still an entirely local, offline program: the server binds to 127.0.0.1 and
@@ -22,6 +22,77 @@ if not os.path.isdir(APP):
 
 os.chdir(APP)
 sys.path.insert(0, APP)
+
+
+# ---------------------------------------------------------------------------
+# DEPENDENCIES
+# ---------------------------------------------------------------------------
+# Cat Prep needs two packages that are not in the standard library, and both are
+# only used for reading PDFs: PyMuPDF to rasterise question images, Pillow to
+# write them. Everything else — the server, the database, the adaptive engine —
+# is standard library.
+#
+# Asking a student to run `pip install PyMuPDF Pillow` before anything works was
+# the single most common complaint after the import time. It is also completely
+# unnecessary: this script is already running in the Python that would do the
+# installing, so it can just do it.
+#
+# Two rules:
+#   - Only install what is actually missing, and say so before doing it.
+#   - If the install fails, DO NOT die. The packages are needed to IMPORT a
+#     question bank, not to use one. Somebody whose bank is already imported
+#     should still get their app.
+
+REQUIRED = [("fitz", "PyMuPDF", "reads the College Board PDFs"),
+            ("PIL", "Pillow", "writes the question images")]
+
+
+def _missing():
+    import importlib.util
+    return [(mod, pkg, why) for mod, pkg, why in REQUIRED
+            if importlib.util.find_spec(mod) is None]
+
+
+def ensure_dependencies() -> None:
+    missing = _missing()
+    if not missing:
+        return
+
+    print("=" * 58)
+    print("  First run, Cat Prep needs two packages:")
+    for _mod, pkg, why in missing:
+        print(f"    {pkg:<10} {why}")
+    print("  Installing them now. This happens once.")
+    print("=" * 58)
+
+    req = os.path.join(ROOT, "requirements.txt")
+    command = [sys.executable, "-m", "pip", "install", "--quiet"]
+    command += ["-r", req] if os.path.isfile(req) else [p for _m, p, _w in missing]
+
+    try:
+        result = subprocess.run(command, capture_output=True, text=True, timeout=600)
+    except Exception as exc:                              # noqa: BLE001
+        print(f"  Could not run pip: {exc}")
+        result = None
+
+    still = _missing()
+    if not still:
+        print("  Done.\n")
+        return
+
+    # Installing failed. Say exactly what to type, then carry on — an already
+    # imported question bank does not need either package to study from.
+    print("  Could not install automatically.")
+    if result is not None and (result.stderr or "").strip():
+        print("  pip said:", (result.stderr or "").strip().splitlines()[-1][:160])
+    print("\n  Run this yourself, then start the app again:")
+    print(f"    {os.path.basename(sys.executable)} -m pip install "
+          + " ".join(pkg for _m, pkg, _w in still))
+    print("\n  Starting anyway, you can still study from a question bank that")
+    print("  is already imported. You just cannot import a new one yet.\n")
+
+
+ensure_dependencies()
 
 import server  # noqa: E402
 

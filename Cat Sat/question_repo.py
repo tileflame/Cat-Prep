@@ -1,5 +1,5 @@
 """
-question_repo.py — every read against the College Board question bank.
+question_repo.py, every read against the College Board question bank.
 
 No SQL against questions.db lives anywhere else in the app. The adaptive engine
 asks this module for pools of questions; the UI asks it for dropdown values.
@@ -30,7 +30,7 @@ def _rows_to_questions(rows) -> list[Question]:
     words instead of the answer ("is", "is either", or an empty field).
     Question.from_row repairs what it can; whatever is left has no key at all,
     and an item with no key scores every possible answer as wrong. Serving one
-    actively teaches the student the wrong thing, so it is filtered here — the
+    actively teaches the student the wrong thing, so it is filtered here, the
     single place every read path goes through.
     """
     return [q for q in (Question.from_row(row) for row in rows) if q.is_gradable]

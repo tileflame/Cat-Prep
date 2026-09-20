@@ -1,10 +1,10 @@
 """
 Performance profiler. Counts the things that actually cost time in a Tk app:
 
-  * widgets created        — CTk widgets are canvas-backed and expensive
-  * sqlite connections     — each one re-runs PRAGMA journal_mode
+  * widgets created      , CTk widgets are canvas-backed and expensive
+  * sqlite connections   , each one re-runs PRAGMA journal_mode
   * sqlite queries
-  * PIL image opens        — 200-DPI PNGs are the single biggest cost
+  * PIL image opens      , 200-DPI PNGs are the single biggest cost
   * wall time
 
 Run: python3 dev_tests/profile_app.py

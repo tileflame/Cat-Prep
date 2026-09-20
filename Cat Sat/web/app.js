@@ -121,7 +121,7 @@ async function api(path, options) {
   } catch (err) {
     if (err === STALE) throw err;          // not a failure; the screen moved on
     const message = err.name === 'AbortError'
-      ? `The app stopped responding after ${Math.round(budget / 1000)}s. It is still running — try again.`
+      ? `The app stopped responding after ${Math.round(budget / 1000)}s. It is still running, try again.`
       : 'Lost the connection to the app. Is the window that started it still open?';
     if (!options?.quiet) toast(message, true);
     return { error: message, offline: true };
@@ -157,7 +157,7 @@ function dur(s) {
   return s < 3600 ? clock(s) : `${Math.floor(s / 3600)}h ${String(Math.floor((s % 3600) / 60)).padStart(2, '0')}m`;
 }
 function when(raw) {
-  if (!raw) return '—';
+  if (!raw) return '-';
   const d = new Date(String(raw).replace(' ', 'T'));
   if (isNaN(d)) return String(raw);
   return d.toLocaleString(undefined, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
@@ -212,8 +212,8 @@ function officialRow(bucket) {
   const band = bucket.official;
   if (!band) return row;
 
-  const verdict = band.low >= BAND_TOP ? ['top band — leave it alone', 'var(--green)']
-    : band.high <= BAND_LOW ? ['weakest — this is where the points are', 'var(--red)']
+  const verdict = band.low >= BAND_TOP ? ['top band, leave it alone', 'var(--green)']
+    : band.high <= BAND_LOW ? ['weakest, this is where the points are', 'var(--red)']
       : ['middle', 'var(--amber)'];
   const practice = bucket.total ? (bucket.correct / bucket.total) * 100 : 0;
   // "Disagrees" = the score report and the practice number point opposite ways.
@@ -280,7 +280,7 @@ function modal(title, bodyNodes, footerNodes) {
 }
 
 /* ------------------------------------------------------------------ state */
-const State = { boot: null, route: 'plan', quiz: null, summary: null, day: null,
+const State = { boot: null, route: 'import', quiz: null, summary: null, day: null,
   /* Review "practice mode": keep the answers covered so a question can be
      re-attempted honestly. Seeing the answer once makes the next attempt
      recognition rather than recall, which is the thing spaced redos exist to
@@ -290,13 +290,42 @@ const State = { boot: null, route: 'plan', quiz: null, summary: null, day: null,
 const ROUTES = [
   ['plan', '📋 Plan'], ['calendar', '🗓 Calendar'], ['test', '🎯 Test'], ['drill', '🎓 Drill'],
   ['log', '🔬 Error Log'], ['history', '🕘 History'], ['dashboard', '📊 Dashboard'],
+  ['setup', '⚙ Setup'],
 ];
 
+/* Reachable, but not permanently in the top bar.
+
+   Ten buttons plus the brand plus the status pills did not fit on one row at
+   any window width worth having. The bar wrapped to two lines, then the pills
+   wrapped to two lines of their own, and a third of the screen above the fold
+   was navigation.
+
+   Importing questions and moving data in are both things you do once. Both have
+   their own cards on the Setup hub, and boot() still sends a user with an empty
+   bank straight to the importer, so neither gets harder to reach. When you are
+   on one of them it appears in the bar so you can always see where you are.
+
+   The exception is an empty bank. "I already have a copy of this" is the other
+   half of the answer to "you have no questions", and that is the one moment
+   somebody needs to find it without being told where to look, so while the bank
+   is empty both stay in the bar. By the time the bar is crowded enough to be a
+   problem, you have a bank and neither belongs there any more. */
+const OFF_NAV = [['import', '📄 Import Questions'], ['migrate', '📦 Move My Data']];
+
 function renderNav() {
-  fill($('#nav'), ...ROUTES.map(([key, label]) =>
+  const empty = State.boot?.bankOk === false;
+  const items = OFF_NAV.filter(([key]) => empty || key === State.route).concat(ROUTES);
+  fill($('#nav'), ...items.map(([key, label]) =>
     el('button', { class: State.route === key ? 'on' : '', onclick: () => go(key) }, label)));
 
   const right = [];
+  if (State.boot?.version) {
+    right.push(el('a.pill.faint', {
+      href: State.boot.releasesUrl || '#', target: '_blank', rel: 'noopener',
+      title: 'Check for a newer version',
+      style: { textDecoration: 'none' },
+    }, `v${State.boot.version}`));
+  }
   if (State.boot?.bankOk && State.boot?.daysToTest !== null && State.boot?.nextTest) {
     const d = State.boot.daysToTest;
     right.push(el('span.pill' + (d <= 3 ? '.red' : d <= 7 ? '.orange' : '.green'),
@@ -321,7 +350,44 @@ async function refreshBoot() {
   renderNav();
 }
 
+/* ---------------------------------------------------------------- focus mode
+   Hide the app's own chrome while a module or a drill is running.
+
+   Bluebook is full screen with nothing around it, and that is not decoration:
+   the tabs are an invitation to check something, and checking something mid
+   module is exactly the habit a practice sitting is supposed to train out of
+   you. Practising with an escape hatch in the corner of your eye is practising
+   a different exam.
+
+   The preference is per machine, so localStorage is the right place for it, not
+   the profile: it describes this screen, not this student. Reading it is
+   wrapped because a browser with site data blocked throws on access rather than
+   returning null, and a thrown preference should not take the app down with it.
+
+   Nothing can get stuck hidden. go() restores the bar on any navigation, and
+   Escape brings it back without leaving the sitting. */
+const FOCUS_KEY = 'catprep.focusMode';
+
+function focusWanted() {
+  try { return localStorage.getItem(FOCUS_KEY) !== '0'; } catch (e) { return true; }
+}
+
+function setFocusWanted(on) {
+  try { localStorage.setItem(FOCUS_KEY, on ? '1' : '0'); } catch (e) { /* blocked */ }
+}
+
+function applyFocus(on) {
+  document.getElementById('app').classList.toggle('focus', !!on);
+}
+
 function go(route, arg) {
+  applyFocus(false);
+  // Empty-bank tabs always offer a working way to add questions.
+  if (State.boot?.bankOk === false && !['import', 'setup', 'profile', 'migrate'].includes(route)) {
+    route = 'import';
+  }
+  // Keep selected files and live progress when an empty-bank tab is clicked.
+  if (route === 'import' && State.route === 'import' && document.querySelector('.dropzone')) return;
   if (State.quiz && !['quiz'].includes(route)) {
     if (!confirm('Leave the sitting in progress? Your answers so far are saved.')) return;
     // Stop the clock and unbind the keyboard BEFORE dropping the quiz.
@@ -371,6 +437,55 @@ function go(route, arg) {
 /* ======================================================================= */
 /* PLAN                                                                     */
 /* ======================================================================= */
+/* What to say when the day being shown has no week on it.
+
+   This used to be one hardcoded sentence naming a seven-week window in 2026
+   that belonged to whoever built the app, shipped to every downloader. Anyone
+   whose plan ran to a different month was told, with complete confidence, about
+   dates that had nothing to do with them.
+
+   There are three real reasons a day has no week, and they want different
+   advice. No profile at all is a setup problem. No test date ahead is the state
+   every single user lands in the morning after they sit the exam, and it is
+   fixed by booking the next one. Having scrolled off the end of a real plan
+   just needs a way back to today. */
+/* Hours, printed the way a person writes them.
+
+   The week's split is computed as hours * 0.3 and hours * 0.7, and binary
+   floating point does not hold 0.3. A ten-hour week was rendering its split as
+   "Math 3.0000000000000004h · R&W 6.999999999999999h", which has been on every
+   build week this app has ever shown. */
+function hrs(n) {
+  const v = Math.round(Number(n) * 10) / 10;
+  return Number.isFinite(v) ? String(v) : String(n);
+}
+
+function planGapCard(data) {
+  if (!data.planSpan) {
+    return el('div.card',
+      el('h2', 'No plan yet'),
+      el('p.sub', 'Add a score report and a test date, and every day gets a plan '
+        + 'built from your own weakest domains.'),
+      el('button.btn.primary', { style: { marginTop: '12px' }, onclick: () => go('profile') },
+        'Set up my plan'));
+  }
+  if (!data.nextTest) {
+    return el('div.card',
+      el('h2', 'No test date booked'),
+      el('p.sub', `Maintenance weeks are running to ${data.planSpan}. They hold the `
+        + 'ground you have and keep the redo queue clear. Add your next sitting and '
+        + 'the whole plan rebuilds as a countdown to it.'),
+      el('button.btn.primary', { style: { marginTop: '12px' }, onclick: () => go('profile') },
+        'Add a test date'));
+  }
+  return el('div.card',
+    el('h2', 'Outside your plan'),
+    el('p.sub', `Your plan runs ${data.planSpan}. Use the arrows to look inside `
+      + 'that window.'),
+    el('button.btn', { style: { marginTop: '12px' }, onclick: () => viewPlan(data.today) },
+      'Back to today'));
+}
+
 async function viewPlan(dayIso) {
   const data = await api('plan' + (dayIso ? `?day=${dayIso}` : ''));
   State.day = data.day;
@@ -410,21 +525,39 @@ async function viewPlan(dayIso) {
   tiles.push(tile('Target', data.targetSuperscore, 'var(--purple)', 'superscore'));
   nodes.push(el('div.grid.c4', tiles));
 
+  /* The day after you sit the exam, there is nothing ahead on the calendar and
+     the plan quietly turns into maintenance. Saying so in the week summary was
+     not enough: it told you to go to Setup and left you to find it. */
+  if (!data.nextTest && data.planSpan) {
+    nodes.push(el('div.card', { style: { borderColor: 'var(--orange)' } },
+      el('div.row',
+        el('div',
+          el('h2', 'No test date booked'),
+          el('p.sub', 'Everything below is maintenance: hold what you have and keep '
+            + 'the redo queue clear. Add your next sitting and the whole plan '
+            + 'rebuilds as a countdown to it.')),
+        el('div.spacer', { style: { flex: 1 } }),
+        el('button.btn.primary', { onclick: () => go('profile') }, 'Add a test date'))));
+  }
+
   if (data.week) {
     nodes.push(el('div.card',
-      el('div.row', el('h2', `Week ${data.week.number} — ${data.week.title}`),
+      el('div.row', el('h2', `Week ${data.week.number}, ${data.week.title}`),
         el('span.pill' + (data.week.kind === 'taper' ? '.orange' : '.green'), data.week.kind.toUpperCase()),
         el('div.spacer', { style: { flex: 1 } }),
-        el('span.faint', `${data.week.hours}h · Math ${data.week.mathHours}h · R&W ${data.week.rwHours}h`)),
+        el('span.faint', `${hrs(data.week.hours)}h · Math ${hrs(data.week.mathHours)}h `
+          + `· R&W ${hrs(data.week.rwHours)}h`)),
       el('p', { style: { marginTop: '6px' } }, data.week.summary),
       el('ul', { style: { margin: '10px 0 0 18px', color: 'var(--dim)', fontSize: '12px' } },
         data.week.bullets.map((b) => el('li', { style: { marginBottom: '3px' } }, b))),
       data.week.focus.length ? el('div.row.tight', { style: { marginTop: '10px' } },
         el('span.faint', 'FOCUS:'),
-        data.week.focus.map((f) => el('span.pill.orange', `${f.domain} — ${f.verdict || ''}`))) : null));
+        // A colon, not a comma. The verdict is a clause of its own, and
+        // "Algebra, Weakest, this is where the points are" reads as a list.
+        data.week.focus.map((f) => el('span.pill.orange',
+          f.verdict ? `${f.domain}: ${f.verdict}` : f.domain))) : null));
   } else {
-    nodes.push(el('div.card', el('h2', 'Outside the seven-week plan'),
-      el('p.sub', 'The Command Center covers Aug 16 – Oct 3, 2026. Use the arrows to look inside that window.')));
+    nodes.push(planGapCard(data));
   }
 
   if (data.redos.due) {
@@ -570,7 +703,10 @@ async function viewCalendar(arg) {
 
   mount(
     el('div.head',
-      el('div', el('h1', '🗓 Calendar'), el('p.sub', 'Your seven-week plan. Click any day to open it.')),
+      el('div', el('h1', '🗓 Calendar'),
+        el('p.sub', data.planSpan
+          ? `Your ${data.weekCount}-week plan, ${data.planSpan}. Click any day to open it.`
+          : 'Click any day to open it.')),
       el('div.spacer'),
       el('div.row.tight',
         el('button.btn.ghost.sm', { onclick: () => viewCalendar(data.prevMonth) }, '◄'),
@@ -798,10 +934,15 @@ async function startRedo(limit) { handleStep(await api('start/redo', { body: { l
 async function startPool(ids, label) { handleStep(await api('start/pool', { body: { questionIds: ids, label } })); }
 
 function handleStep(data) {
-  if (!data || data.error) { refreshBoot(); return; }
-  if (data.step === 'module') return renderQuiz(data);
-  if (data.step === 'break') return renderBreak(data.break);
-  if (data.step === 'done') { State.quiz = null; refreshBoot(); return renderReview(data.summary); }
+  if (!data || data.error) { applyFocus(false); refreshBoot(); return; }
+  // A break is still the sitting, so the chrome stays hidden through it. The
+  // review screen is afterwards, and afterwards you want the tabs back.
+  if (data.step === 'module') { applyFocus(focusWanted()); return renderQuiz(data); }
+  if (data.step === 'break') { applyFocus(focusWanted()); return renderBreak(data.break); }
+  if (data.step === 'done') {
+    State.quiz = null; applyFocus(false); refreshBoot();
+    return renderReview(data.summary);
+  }
 }
 
 /* ======================================================================= */
@@ -837,7 +978,7 @@ function renderQuiz(payload) {
 
   const shell = el('div.quiz',
     el('div.quizbar', ctx,
-      module.tier && payload.mode !== 'drill' ? el('span.pill.blue', module.tierLabel?.split('—')[0]?.trim()) : null,
+      module.tier && payload.mode !== 'drill' ? el('span.pill.blue', module.tierLabel?.split('-')[0]?.trim()) : null,
       counter, timerBtn, el('div.spacer', { style: { flex: 1 } }),
       questions.some((q) => q.section === 'Math') ? el('button.btn.ghost.sm', { onclick: openDesmos }, '🧮 Calc') : null,
       el('button.btn.ghost.sm', { onclick: openNotes }, '📝 Note'),
@@ -846,7 +987,8 @@ function renderQuiz(payload) {
     el('div.progress', progress),
     imgWrap,
     answers,
-    el('div.hint', 'A–D answer · ← → navigate · F flag · S not sure · X cross-out · +/− zoom'),
+    el('div.hint', 'A–D answer · ← → navigate · F flag · S not sure · X cross-out '
+      + '· +/− zoom · Esc show tabs'),
     el('div.quiznav', prevBtn,
       el('button.btn', { onclick: openIndex }, '🗂 Question index'),
       el('div.zoomer',
@@ -977,6 +1119,9 @@ function renderQuiz(payload) {
     else if (key === 'x') crossBtn.click();
     else if (e.key === '+' || e.key === '=') zoom(0.15);
     else if (e.key === '-') zoom(-0.15);
+    // Escape reveals the tabs without ending the sitting. This is the way out
+    // of focus mode that does not cost you the module you are halfway through.
+    else if (e.key === 'Escape') applyFocus(false);
   }
   document.addEventListener('keydown', onKey);
   Q.unbind = () => document.removeEventListener('keydown', onKey);
@@ -995,7 +1140,7 @@ function renderQuiz(payload) {
     const q = questions[Q.index];
     const data = await api(`note/${q.id}`, { quiet: true });
     const box = el('textarea', { rows: '10', style: { minHeight: '220px' } }, data.body || '');
-    modal('📝 Scratchpad — ' + q.id, box, [
+    modal('📝 Scratchpad: ' + q.id, box, [
       el('button.btn.primary', {
         onclick: async () => { await api('note', { body: { questionId: q.id, body: box.value } }); toast('Note saved'); },
       }, 'Save note')]);
@@ -1064,7 +1209,7 @@ function renderBreak(info) {
     const paint = () => {
       const node = document.getElementById('breakclock');
       if (!node) return clearInterval(window.__brk);
-      node.textContent = left > 0 ? `⏳ ${clock(left)} remaining` : 'Break over — continue when ready.';
+      node.textContent = left > 0 ? `⏳ ${clock(left)} remaining` : 'Break over. Continue when ready.';
       left -= 1;
     };
     paint();
@@ -1110,7 +1255,7 @@ function renderReview(summary) {
         el('span.pill.' + r.difficulty.toLowerCase(), r.difficulty),
         el('span.faint', `${r.domain} · ${r.skill}`),
         el('div.spacer', { style: { flex: 1 } }),
-        el('span', { style: { color: r.isCorrect ? 'var(--green)' : 'var(--red)', fontWeight: 700 } }, `You: ${r.selected || '—'}`),
+        el('span', { style: { color: r.isCorrect ? 'var(--green)' : 'var(--red)', fontWeight: 700 } }, `You: ${r.selected || '-'}`),
         !r.isCorrect ? covered(el('span', { style: { color: 'var(--green)', fontWeight: 700 } },
           `Correct: ${r.correctAnswer}`)) : null,
         el('span.faint.mono', { style: { color: r.slow ? 'var(--orange)' : '' } }, secs(r.seconds)),
@@ -1137,7 +1282,7 @@ function renderReview(summary) {
 
   if (summary.isAdaptive && summary.sections.length) {
     nodes.push(el('div.card',
-      el('div.row', el('h2', 'Estimated score'), el('span.pill.faint', 'estimate — not an official conversion')),
+      el('div.row', el('h2', 'Estimated score'), el('span.pill.faint', 'estimate, not an official conversion')),
       el('div.grid.c3', { style: { marginTop: '8px' } },
         summary.sections.filter((s) => s.total).map((s) =>
           tile(s.section, s.estimatedScore, accColor(s.accuracy),
@@ -1161,7 +1306,7 @@ function renderReview(summary) {
           el('div.row', el('strong', s.section), el('span.pill', { style: { color: s.tierColor } }, s.tierLabel)),
           el('p.sub', { style: { marginTop: '4px' } }, s.routingNote),
           el('div.grid.c3', { style: { marginTop: '8px' } },
-            s.modules.map((m) => tile(`Module ${m.moduleNumber} · ${m.tierLabel.split('—')[0].trim()}`,
+            s.modules.map((m) => tile(`Module ${m.moduleNumber} · ${m.tierLabel.split('-')[0].trim()}`,
               `${m.correct}/${m.total}`, accColor(m.rawAccuracy), `${pct(m.rawAccuracy)} · ${dur(m.timeUsed)}`))))),
         el('p.faint', 'Routing uses difficulty-weighted accuracy: a correct Hard question counts for more than a correct Easy one.')));
     }
@@ -1183,7 +1328,7 @@ function renderReview(summary) {
         tile('When you were right', secs(p.onCorrect), 'var(--green)'),
         tile('When you were wrong', secs(p.onWrong), 'var(--red)')),
       el('p.faint', { style: { marginTop: '8px', color: p.slowCount ? 'var(--orange)' : 'var(--green)' } },
-        p.slowCount ? `${plural(p.slowCount, 'question')} ran well over the pacing target — filter to “Slow”.`
+        p.slowCount ? `${plural(p.slowCount, 'question')} ran well over the pacing target, filter to “Slow”.`
           : 'No questions ran badly over time. Good pacing.')));
   }
 
@@ -1201,7 +1346,7 @@ function renderReview(summary) {
     el('button.btn', { onclick: () => go('dashboard') }, '📊 Dashboard'),
     el('button.btn', { onclick: () => go('history') }, '🕘 History'),
     el('div.spacer', { style: { flex: 1 } }),
-    wrong.length ? el('button.btn', { onclick: () => startPool(wrong.map((r) => r.id), `Redo — ${summary.label}`) }, `🔁 Redo ${wrong.length}`) : null,
+    wrong.length ? el('button.btn', { onclick: () => startPool(wrong.map((r) => r.id), `Redo, ${summary.label}`) }, `🔁 Redo ${wrong.length}`) : null,
     toLog.length ? el('button.btn.primary', { onclick: () => go('log', summary.sessionId) }, `🔬 Log these ${toLog.length}`) : null));
 
   paintList();
@@ -1209,8 +1354,8 @@ function renderReview(summary) {
 }
 
 function showExplanation(r) {
-  modal(`📖 Explanation — ${r.domain} · ${r.difficulty}`, [
-    el('div.row', el('span', { style: { color: r.isCorrect ? 'var(--green)' : 'var(--red)', fontWeight: 700 } }, `Your answer: ${r.selected || '— skipped —'}`),
+  modal(`📖 Explanation, ${r.domain} · ${r.difficulty}`, [
+    el('div.row', el('span', { style: { color: r.isCorrect ? 'var(--green)' : 'var(--red)', fontWeight: 700 } }, `Your answer: ${r.selected || '(skipped)'}`),
       covered(el('span', { style: { color: 'var(--green)', fontWeight: 700 } },
         `Correct answer: ${r.correctAnswer}`))),
     el('h3', { style: { marginTop: '14px' } }, 'Question'),
@@ -1238,7 +1383,7 @@ async function viewLog(sessionId) {
       tile('Process causes', ['C', 'M', 'A', 'D'].reduce((a, c) => a + (data.counts[c] || 0), 0), 'var(--amber)', 'C + M + A + D')),
     data.tagged < 4
       ? el('p', { style: { color: 'var(--orange)', marginTop: '10px' } },
-        `Tag at least 4 questions to get a diagnosis — ${data.tagged} tagged so far. Untagged rows can't tell you anything.`)
+        `Tag at least 4 questions to get a diagnosis, ${data.tagged} tagged so far. Untagged rows can't tell you anything.`)
       : [el('div', { style: { marginTop: '12px' } },
         Object.entries(data.counts).sort((a, b) => b[1] - a[1]).map(([code, n]) =>
           barRow(`${code} · ${(data.causes.find((c) => c.code === code) || {}).label || code}`, n, data.tagged))),
@@ -1299,15 +1444,15 @@ async function viewLog(sessionId) {
         el('div.spacer', { style: { flex: 1 } }),
         el('span.faint.mono', [secs(entry.seconds), when(entry.answeredAt), entry.moduleNumber ? `Module ${entry.moduleNumber}` : null, entry.sessionLabel].filter(Boolean).join('  ·  '))),
       el('div.row', { style: { marginTop: '6px' } },
-        el('strong', { style: { color: entry.isCorrect ? 'var(--green)' : 'var(--red)' } }, `Your answer: ${entry.selected || '— skipped —'}`),
-        el('strong', { style: { color: 'var(--green)' } }, `Correct answer: ${entry.correctAnswer || '—'}`),
+        el('strong', { style: { color: entry.isCorrect ? 'var(--green)' : 'var(--red)' } }, `Your answer: ${entry.selected || '(skipped)'}`),
+        el('strong', { style: { color: 'var(--green)' } }, `Correct answer: ${entry.correctAnswer || '-'}`),
         entry.eliminated ? el('span.faint', `crossed out: ${entry.eliminated}`) : null),
       entry.lucky ? el('p.faint', { style: { color: 'var(--purple)' } },
-        "You got this right but weren't sure. It counts as a miss — fragile knowledge flips on a harder module.") : null,
+        "You got this right but weren't sure. It counts as a miss, fragile knowledge flips on a harder module.") : null,
 
       /* the question itself — collapsed so the list stays skimmable */
       entry.missing
-        ? el('p.faint', { style: { color: 'var(--orange)' } }, `Question ${entry.questionId} is no longer in the bank — re-run sat_importer.py.`)
+        ? el('p.faint', { style: { color: 'var(--orange)' } }, `Question ${entry.questionId} is no longer in the bank, re-run sat_importer.py.`)
         : el('details',
           el('summary', `▼ Show question & rationale  ·  id ${entry.questionId}`,
             entry.rationale ? '' : '  (no rationale captured)'),
@@ -1320,7 +1465,7 @@ async function viewLog(sessionId) {
 
       el('div.faint', { style: { marginTop: '10px' } }, 'WHY DID YOU MISS IT?'),
       el('div.chiplist', causeButtons),
-      el('div.faint', { style: { marginTop: '10px' } }, 'ONE SENTENCE — AN INSTRUCTION TO YOUR FUTURE SELF'),
+      el('div.faint', { style: { marginTop: '10px' } }, 'ONE SENTENCE: AN INSTRUCTION TO YOUR FUTURE SELF'),
       el('div.row', input, el('button.btn.primary.sm', { onclick: save }, 'Save')),
       status);
   }
@@ -1367,7 +1512,7 @@ async function viewHistory() {
         s.estimated_score ? el('span.pill.green', `est. ${s.estimated_score}`) : null,
         el('button.btn.sm', { onclick: async () => { const r = await api(`review/${s.session_id}`); if (!r.error) renderReview(r); } }, 'Open review'),
         el('button.btn.sm.ghost', { onclick: async () => { if (confirm(`Delete “${s.label}”? This cannot be undone.`)) { await api(`history/${s.session_id}`, { method: 'DELETE', body: {} }); viewHistory(); } } }, '🗑')),
-      el('div.faint', `${when(s.started_at)} · ${s.section || '—'}${s.duration_seconds ? ' · ' + dur(s.duration_seconds) : ''}`));
+      el('div.faint', `${when(s.started_at)} · ${s.section || '-'}${s.duration_seconds ? ' · ' + dur(s.duration_seconds) : ''}`));
   }
 
   mount(
@@ -1405,7 +1550,7 @@ async function viewDashboard() {
       tile('Questions answered', d.stats.total.toLocaleString(), 'var(--blue)', `${d.stats.unique_q.toLocaleString()} unique`),
       tile('Overall accuracy', pct(d.stats.accuracy), accColor(d.stats.accuracy), `${d.stats.correct.toLocaleString()} correct`),
       tile('Avg time / question', secs(d.stats.avg_seconds), 'var(--amber)'),
-      tile('Best estimated score', scored.length ? Math.max(...scored.map((p) => p.estimated_score)) : '—',
+      tile('Best estimated score', scored.length ? Math.max(...scored.map((p) => p.estimated_score)) : '-',
         scored.length ? 'var(--green)' : 'var(--faint)',
         scored.length ? `latest ${scored[scored.length - 1].estimated_score}` : 'sit a full test')),
     el('div.card', el('h2', 'Accuracy by session'), el('p.faint', 'one point per completed session'), trendChart(d.timeline)),
@@ -1438,7 +1583,7 @@ function pacingNote(p) {
     return { color: 'var(--orange)', text: 'You spend noticeably longer on the questions you get wrong. That usually means guessing and moving on sooner is the better trade.' };
   }
   if (p.avg_incorrect < p.avg_correct * 0.75) {
-    return { color: 'var(--orange)', text: "You're answering wrong questions faster than right ones — usually rushing. Slow down on the ones you're unsure about." };
+    return { color: 'var(--orange)', text: "You're answering wrong questions faster than right ones, usually rushing. Slow down on the ones you're unsure about." };
   }
   return { color: 'var(--green)', text: 'Your timing on right and wrong answers is balanced. Good discipline.' };
 }
@@ -1473,7 +1618,9 @@ function trendChart(points) {
 
 /* ======================================================================= */
 const VIEWS = { plan: viewPlan, calendar: viewCalendar, test: viewTest, drill: viewDrill,
-                log: viewLog, history: viewHistory, dashboard: viewDashboard };
+                log: viewLog, history: viewHistory, dashboard: viewDashboard,
+                setup: viewSetupHub, import: viewSetup, profile: viewProfileSetup,
+                migrate: viewMigrate };
 
 /* ======================================================================= */
 /* FIRST-RUN SETUP                                                          */
@@ -1483,15 +1630,168 @@ const VIEWS = { plan: viewPlan, calendar: viewCalendar, test: viewTest, drill: v
    which assumes a terminal, a Python install, and knowing where the folder
    went. Real users reported setup taking a whole day. */
 
+/* ======================================================================= */
+/* SETUP HUB                                                                */
+/* ======================================================================= */
+/* Import and profile used to be reachable ONLY from boot(), and only when there
+   was no question bank. The moment setup succeeded both screens became
+   unreachable forever: no way to add a second College Board export, no way to
+   fix a test date, no way to attach a score report that arrived later. The app
+   had no settings screen at all — the two screens that configure it were
+   first-run-only, which is exactly the wall you hit once it is working.
+
+   This is the hub the nav points at: current state of both, and a button into
+   each. */
+async function viewSetupHub() {
+  const [env, prof] = await Promise.all([
+    api('setup/env', { quiet: true }),
+    api('setup/profile', { quiet: true }),
+  ]);
+
+  const bankCount = (env && env.bankCount) || 0;
+  const hasProfile = !!(prof && prof.exists);
+  const dates = (prof && prof.testDates) || [];
+  const next = dates.map((d) => d.date).filter(Boolean).sort()
+    .find((d) => d >= new Date().toISOString().slice(0, 10));
+
+  mount(
+    el('div.head', el('div',
+      el('h1', '⚙ Setup'),
+      el('div.sub', 'Your question bank and your scores. Change either at any time.'))),
+
+    el('div.card',
+      el('div.row',
+        el('h2', '📄 Question bank'),
+        el('span.pill' + (bankCount ? '.green' : '.orange'),
+          bankCount ? `${bankCount.toLocaleString()} questions` : 'empty')),
+      el('p.sub', bankCount
+        ? 'Add another College Board export whenever you want more questions. '
+          + 'Files you have already imported are skipped, so this is quick.'
+        : 'Export from the College Board Question Bank WITH answers and '
+          + 'rationales, then drag the PDFs in.'),
+      (env && env.pdfsPresent && env.pdfsPresent.length)
+        ? el('p.faint', `PDFs on disk: ${env.pdfsPresent.join(', ')}`) : null,
+      (env && env.syncedFolder)
+        ? el('p.faint', { style: { color: 'var(--orange)' } },
+            `This folder is inside ${env.syncedFolder}. Importing there is about `
+            + 'three times slower, move the folder somewhere local first.') : null,
+      (env && env.importerReady === false)
+        ? el('p.faint', { style: { color: 'var(--red)' } },
+            `${(env.importerMissing || []).join(' and ')} is not installed, so `
+            + 'importing cannot run yet. Open Import Questions for the one line to run.')
+        : null,
+      el('button.btn.primary.lg', { style: { marginTop: '12px' },
+        onclick: () => go('import') },
+        bankCount ? 'Import more questions' : 'Import questions')),
+
+    el('div.card',
+      el('div.row',
+        el('h2', '📊 Your scores and test dates'),
+        el('span.pill' + (hasProfile ? '.green' : '.orange'),
+          hasProfile ? 'set up' : 'not set up')),
+      hasProfile
+        ? el('div',
+            el('p.sub',
+              (prof.superscore ? `Superscore ${prof.superscore}. ` : '')
+              + `${prof.reportCount || 0} score report`
+              + ((prof.reportCount === 1) ? '' : 's') + ' attached, '
+              + `${dates.length} test date` + ((dates.length === 1) ? '' : 's') + '.'),
+            next ? el('p.faint', `Next test: ${next}`)
+                 : el('p.faint', { style: { color: 'var(--orange)' } },
+                     'No upcoming test date, the plan stays empty until you add one.'))
+        : el('p.sub', 'The study plan is built from your score reports and your '
+            + 'test dates. Without them there is nothing to plan against.'),
+      el('button.btn.primary.lg', { style: { marginTop: '12px' },
+        onclick: () => go('profile') },
+        hasProfile ? 'Edit scores and test dates' : 'Set up your profile')),
+
+    el('div.card',
+      el('div.row',
+        el('h2', '📦 Coming from an older copy?'),
+        el('span.pill.faint', 'one time')),
+      el('p.sub', 'If you already used Cat Prep in another folder, move your '
+        + 'question bank, your history and your profile across in one step. '
+        + 'Nothing is written to the old folder, so it stays as a backup.'),
+      el('button.btn.lg', { style: { marginTop: '12px' },
+        onclick: () => go('migrate') }, 'Move my data over')),
+
+    /* The one screen preference worth having. It lives here rather than in the
+       profile because it describes this machine, not this student. */
+    (() => {
+      const state = el('span.pill' + (focusWanted() ? '.green' : '.faint'),
+        focusWanted() ? 'ON' : 'OFF');
+      const btn = el('button.btn.lg', { style: { marginTop: '12px' } },
+        focusWanted() ? 'Turn it off' : 'Turn it on');
+      btn.onclick = () => {
+        const now = !focusWanted();
+        setFocusWanted(now);
+        state.className = 'pill ' + (now ? 'green' : 'faint');
+        state.textContent = now ? 'ON' : 'OFF';
+        btn.textContent = now ? 'Turn it off' : 'Turn it on';
+      };
+      return el('div.card',
+        el('div.row', el('h2', 'Full screen during tests and drills'), state),
+        el('p.sub', 'Hides the tabs and the status bar while a module is running, '
+          + 'the way Bluebook does. The tabs are an invitation to check something, '
+          + 'and checking something mid module is the habit a practice sitting is '
+          + 'meant to train out of you. Escape brings them back without ending '
+          + 'the sitting.'),
+        btn);
+    })(),
+
+    el('div.card',
+      el('div.row', el('h2', 'Back up your work'), el('span.pill.faint', 'do this now')),
+      el('p.sub', 'Zips your question bank, your history and your profile onto '
+        + 'your Desktop. The export took an hour to import and the answers took '
+        + 'months. There is no good version of losing them.'),
+      (() => {
+        const out = el('div');
+        const btn = el('button.btn.lg', { style: { marginTop: '12px' } }, 'Back up to my Desktop');
+        btn.onclick = async () => {
+          btn.disabled = true;
+          fill(out, el('p.faint', { style: { marginTop: '10px' } }, 'Zipping, this can take a minute...'));
+          const r = await api('setup/backup', { body: {} });
+          btn.disabled = false;
+          fill(out, r && r.ok
+            ? el('p.sub', { style: { color: 'var(--green)', marginTop: '10px' } },
+                `Saved ${(r.files || 0).toLocaleString()} files, ${r.sizeMB} MB, to ${r.path}`)
+            : el('p.sub', { style: { color: 'var(--red)', marginTop: '10px' } },
+                (r && r.error) || 'Backup failed.'));
+        };
+        return el('div', btn, out);
+      })()),
+
+    el('div.card',
+      el('h2', 'Where your files are'),
+      el('p.faint', (env && env.dataDir) || ''),
+      (env && env.freeGB)
+        ? el('p.faint', `${env.freeGB} GB free, a full question bank needs about 1 GB of images.`)
+        : null));
+}
+
 async function viewSetup() {
   const env = await api('setup/env', { quiet: true });
+  if (!env || env.error) throw new Error(env?.error || 'Could not load the import screen.');
   const staged = [];                       // files chosen but not yet uploaded
+  let busy = false;
+  let finished = false;                    // an import on this screen has completed
+  const hasLocalPdfs = !!env.pdfsPresent?.length;
+  // `!== false`, not truthiness: an older server that does not send the field
+  // at all should let the import proceed, not lock the button forever.
+  const canImport = env.importerReady !== false;
+  // Only the NEWEST import screen is allowed to poll. Leaving the old chain
+  // running looked harmless — it writes into a detached node nobody can see —
+  // but poll() is deliberately nav:false so it survives navigation, so every
+  // visit back to this tab during a ten-minute import started another one, and
+  // all of them kept asking the server for progress once a second.
+  const generation = (viewSetup.generation = (viewSetup.generation || 0) + 1);
+  const mine = () => viewSetup.generation === generation;
 
   const dropzone = el('div.dropzone',
     el('div.dzicon', '📄'),
     el('div.dztitle', 'Drop your College Board PDFs here'),
     el('p.faint', 'or click to choose them. Export them from the Question Bank '
-      + 'WITH answers and rationales — without those the app cannot grade you.'));
+      + 'WITH answers and rationales, without those the app cannot grade you.'));
 
   const fileInput = el('input', { type: 'file', accept: '.pdf', multiple: true,
     style: { display: 'none' } });
@@ -1506,19 +1806,35 @@ async function viewSetup() {
         el('div.spacer', { style: { flex: 1 } }),
         el('span.faint', `${(f.size / 1e6).toFixed(0)} MB`),
         el('span.pill' + (f.done ? '.green' : '.faint'), f.done ? 'uploaded' : 'ready')))));
-    goBtn.disabled = !staged.length;
+    // `finished` matters: when an import completes, busy drops back to false
+    // and every staged file is marked done — which re-enabled a button reading
+    // "Import questions" directly underneath "✅ Import complete". Clicking it
+    // uploaded nothing and kicked off a second scan of the same PDFs.
+    goBtn.disabled = busy || finished || !canImport
+      || (!staged.length && !hasLocalPdfs);
   }
 
   function add(files) {
+    if (busy) return;
     for (const f of files) {
       if (!f.name.toLowerCase().endsWith('.pdf')) continue;
       if (staged.some((s) => s.name === f.name && s.size === f.size)) continue;
       staged.push({ name: f.name, size: f.size, file: f, done: false });
+      finished = false;              // new files to import re-arms the button
     }
     drawList();
   }
 
-  dropzone.onclick = () => fileInput.click();
+  dropzone.tabIndex = 0;
+  dropzone.setAttribute('role', 'button');
+  dropzone.setAttribute('aria-label', 'Choose question PDFs from your computer');
+  dropzone.onclick = () => { if (!busy) fileInput.click(); };
+  dropzone.onkeydown = (event) => {
+    if (event.key === 'Enter' || event.key === ' ') {
+      event.preventDefault();
+      dropzone.click();
+    }
+  };
   fileInput.onchange = () => add(fileInput.files);
   ['dragenter', 'dragover'].forEach((e) => dropzone.addEventListener(e, (ev) => {
     ev.preventDefault(); dropzone.classList.add('over');
@@ -1529,6 +1845,8 @@ async function viewSetup() {
   dropzone.addEventListener('drop', (ev) => add(ev.dataTransfer.files));
 
   goBtn.onclick = async () => {
+    if (busy) return;
+    busy = true;
     goBtn.disabled = true;
     // Upload one at a time. The file is sent as the raw body, so the browser
     // streams it instead of building a multipart buffer of 160 MB.
@@ -1549,16 +1867,17 @@ async function viewSetup() {
         out = { error: `Could not upload ${f.name}: ${err.message}. `
           + 'If it is in OneDrive or Dropbox, copy it somewhere local first.' };
       }
-      if (out.error) { toast(out.error, true); goBtn.disabled = false; return; }
+      if (out.error) { toast(out.error, true); busy = false; drawList(); return; }
       f.done = true; drawList();
     }
     const started = await api('setup/import', { body: {} });
-    if (started.error) { toast(started.error, true); goBtn.disabled = false; return; }
+    if (started.error) { toast(started.error, true); busy = false; drawList(); return; }
     poll();
   };
 
   let pollMisses = 0;
   async function poll() {
+    if (!mine()) return;                   // a newer import screen owns the chain
     // nav:false — this poll chain has to survive anything the user does for
     // the ten minutes an import takes. Cancelling it would freeze the progress
     // bar while the import carried on invisibly, which is the exact bug the
@@ -1574,12 +1893,23 @@ async function viewSetup() {
       if (pollMisses < 10) return setTimeout(poll, 1500);
       return fill(status,
         el('h3', '🔌 Lost contact with the app'),
-        el('p.sub', 'The import may still be running. Reopen the window to check — '
+        el('p.sub', 'The import may still be running. Reopen the window to check, '
           + 'nothing already imported is lost.'),
         el('button.btn.primary', { style: { marginTop: '10px' },
           onclick: () => { pollMisses = 0; poll(); } }, 'Try again'));
     }
     pollMisses = 0;
+    busy = p.state === 'importing';
+    finished = p.state === 'done';
+    drawList();
+    if (p.state === 'done') {
+      await refreshBoot();
+      if (!mine()) return;
+      // bankOk has just flipped to true. renderNav paints the countdown,
+      // untagged and redo pills from State.boot, and without this they keep
+      // showing the empty-bank state until the next navigation.
+      renderNav();
+    }
     const pctDone = Math.round((p.progress || 0) * 100);
     const running = p.state === 'importing';
     // Never let the bar go backwards: the estimate can drift, and a bar that
@@ -1616,7 +1946,7 @@ async function viewSetup() {
         f.error ? el('span', { style: { color: 'var(--red)' } }, f.error) : null)),
       p.state === 'done'
         ? el('button.btn.primary.lg', { style: { marginTop: '14px' },
-            onclick: () => viewProfileSetup() }, 'Next: your scores →')
+            onclick: () => go('profile') }, 'Next: your scores →')
         : null,
       // Without this a failed import was a dead end: the button stayed
       // disabled and only a page reload got you out.
@@ -1625,6 +1955,7 @@ async function viewSetup() {
             el('button.btn.primary', { onclick: async () => {
               const again = await api('setup/import', { body: { force: true } });
               if (again.error) { toast(again.error, true); return; }
+              busy = true; finished = false; drawList();
               pollMisses = 0; poll();
             } }, 'Try the import again'),
             el('span.faint', 'Re-reads every PDF from scratch.'))
@@ -1633,11 +1964,36 @@ async function viewSetup() {
   }
 
   const warnings = [];
+  // Tell them BEFORE the upload, not after.
+  //
+  // run.py installs these two on first launch, so most people never see this.
+  // When that install fails — offline, a locked-down school laptop, a Python
+  // with no pip — the app used to stay quiet about it until the moment the
+  // import ran, which is after two 160 MB uploads. Say it here, and stop the
+  // button, so the wasted twenty minutes never happens.
+  if (env.importerReady === false) {
+    warnings.push(el('div.card', { style: { borderColor: 'var(--red)' } },
+      el('h2', { style: { color: 'var(--red)' } },
+        '⚠️ ' + (env.importerMissing || []).join(' and ') + ' missing'),
+      el('p.sub', 'The importer reads PDFs with '
+        + (env.importerMissing || []).join(' and ')
+        + ', and cannot run without it. Nothing else in the app is affected, '
+        + 'a question bank you have already imported still works.'),
+      el('p.sub', { style: { marginTop: '8px' } }, 'Close the app, run this, then start it again:'),
+      el('pre', { style: { background: 'var(--surface2)', padding: '10px',
+        borderRadius: '6px', overflowX: 'auto', marginTop: '6px' } },
+        env.installCommand || 'python -m pip install -r requirements.txt'),
+      // State.route is cleared first on purpose: go('import') from the import
+      // screen is a no-op by design, so that clicking the tab does not throw
+      // away a staged 160 MB file. Re-checking has to defeat that guard.
+      el('button.btn.sm', { style: { marginTop: '10px' },
+        onclick: () => { State.route = null; go('import'); } }, 'Check again')));
+  }
   if (env.syncedFolder) {
     warnings.push(el('div.card', { style: { borderColor: 'var(--orange)' } },
       el('h2', { style: { color: 'var(--orange)' } }, '⚠️ This folder is synced by ' + env.syncedFolder),
       el('p.sub', 'Importing writes thousands of image files. A sync client uploads '
-        + 'every one as it appears and fights the import for the disk — one user '
+        + 'every one as it appears and fights the import for the disk, one user '
         + 'measured about 10 minutes here versus about 3 outside. Move the app to a '
         + 'normal folder (your Desktop outside the synced one, or C:\\CatPrep) '
         + 'before importing.')));
@@ -1650,19 +2006,27 @@ async function viewSetup() {
 
   mount(
     el('div.head', el('div',
-      el('h1', '🐱 Set up Cat Prep'),
-      el('div.sub', 'Two minutes, no terminal.'))),
+      el('h1', '📄 Import Questions'),
+      // The global Import Questions tab remains available during setup.
+      State.boot?.bankOk ? el('button.btn.sm.ghost', { style: { marginLeft: '12px' },
+        onclick: () => go('setup') }, '← Setup') : null,
+
+      el('div.sub', 'Choose question PDFs from any folder, or drag them below.'))),
     ...warnings,
     el('div.card', el('h2', 'Question bank'), dropzone, fileInput,
-      staged.length ? list : null, list, status,
+      hasLocalPdfs ? el('p.faint', 'PDFs already available: ' + env.pdfsPresent.join(', ')) : null,
+      list, status,
       el('div.row', { style: { marginTop: '14px' } }, goBtn,
         el('span.faint', 'This takes a few minutes. You can watch it.'))),
     el('div.card',
       el('h2', 'Where your files go'),
       el('p.faint', env.dataDir),
       el('p.faint', { style: { marginTop: '6px' } },
-        `${env.freeGB} GB free — the images need roughly 1 GB per full question bank.`)));
+        `${env.freeGB} GB free, the images need roughly 1 GB per full question bank.`)));
   drawList();
+  // Reopening the screen reconnects to an import already running on the server.
+  const progress = await api('setup/progress', { quiet: true });
+  if (progress?.state === 'importing') { busy = true; drawList(); poll(); }
 }
 
 /* Step 2 of setup. This replaces `python setup_profile.py`, which asked the
@@ -1672,16 +2036,28 @@ async function viewSetup() {
    conclusion they would, and be able to tell when it hasn't. */
 async function viewProfileSetup() {
   const reports = [];
-  const dates = [{ date: '', label: '' }];
-  const name = el('input', { type: 'text', placeholder: 'Your name (optional)' });
+  // Start from what is ALREADY saved, not from a blank row.
+  //
+  // This screen used to open empty every time, and save_profile only ever
+  // appended — so a mistyped test date could not be corrected or removed, and
+  // one stray year stretched every generated plan out to it. Loading the saved
+  // list means the rows you see are the rows that will be stored: edit one,
+  // delete one, and save replaces the lot.
+  const saved = await api('setup/profile', { quiet: true, nav: false });
+  const dates = (saved && saved.testDates && saved.testDates.length)
+    ? saved.testDates.map((d) => ({ date: d.date || '', label: d.label || '' }))
+    : [{ date: '', label: '' }];
+  const name = el('input', { type: 'text', placeholder: 'Your name (optional)',
+    value: (saved && saved.name) || '' });
   const target = el('input', { type: 'number', min: '400', max: '1600', step: '10',
-    placeholder: 'Target total, e.g. 1500' });
+    placeholder: 'Target total, e.g. 1500',
+    value: (saved && saved.target) || '' });
 
   const drop = el('div.dropzone',
     el('div.dzicon', '📊'),
     el('div.dztitle', 'Drop your score reports here'),
     el('p.faint', 'Real reports from your College Board account, or Bluebook practice '
-      + 'reports. Optional — but with them the plan knows which domains to work.'));
+      + 'reports. Optional, but with them the plan knows which domains to work.'));
   const pick = el('input', { type: 'file', accept: '.pdf', multiple: true,
     style: { display: 'none' } });
   const found = el('div.list');
@@ -1752,7 +2128,7 @@ async function viewProfileSetup() {
       out.superscore ? el('p.sub', `Superscore ${out.superscore}`
         + (out.target ? ` · target ${out.target}` : '')) : null,
       (out.banked || []).length
-        ? el('p.sub', `${out.banked.join(' and ')} is banked — the plan gives it zero minutes, `
+        ? el('p.sub', `${out.banked.join(' and ')} is banked, the plan gives it zero minutes, `
             + 'because superscore keeps your best section forever.') : null,
       out.weeks ? el('p.sub', `${out.weeks} weeks and ${out.days} days planned.`) : null,
       (out.priorities || []).length
@@ -1780,6 +2156,10 @@ async function viewProfileSetup() {
   mount(
     el('div.head', el('div',
       el('h1', '📊 Your scores'),
+      // The global Import Questions tab remains available during setup.
+      State.boot?.bankOk ? el('button.btn.sm.ghost', { style: { marginLeft: '12px' },
+        onclick: () => go('setup') }, '← Setup') : null,
+
       el('div.sub', 'This is what the study plan is built from. You can skip it and add it later.'))),
     el('div.card', el('h2', 'Score reports'), drop, pick, found),
     el('div.grid.c2',
@@ -1791,7 +2171,9 @@ async function viewProfileSetup() {
           'Every SAT you are registered for or plan to sit.'),
         dateRows)),
     el('div.row', save,
-      el('button.btn.ghost', { onclick: () => location.reload() }, 'Skip for now')),
+      el('button.btn.ghost', {
+        onclick: () => (State.boot?.bankOk ? go('setup') : location.reload()) },
+        State.boot?.bankOk ? 'Cancel' : 'Skip for now')),
     result);
   drawDates();
 }
@@ -1813,13 +2195,181 @@ async function viewProfileSetup() {
       + 'Prep again, and it will reopen a working one.',
       'Try again', () => location.reload()));
   }
-  if (State.boot.bankOk === false) {
-    // No nav during setup. Every tab needs a question bank, so leaving them
-    // clickable just offers a row of dead ends to the one user who has the
-    // least idea what is going on.
-    fill($('#nav'));
-    fill($('#topright'));
-    return viewSetup();
-  }
-  go(State.boot.planLive ? 'plan' : 'dashboard');
+  // Where to land. go() already rewrites ANY route to 'import' when the bank
+  // is empty, so this only has to answer the question for someone who has
+  // questions — landing everyone on Import unconditionally was right for the
+  // first run and wrong for the other 200 launches: a student with 3,713
+  // questions and a live plan opened the app every morning onto a
+  // drag-your-PDFs-here screen.
+  //
+  //   no bank              -> Import. The first run, and the only screen that
+  //                           can do anything. (Named explicitly rather than
+  //                           left to go(): 'setup' is exempt from that
+  //                           rewrite, so a first run would have opened on the
+  //                           Setup hub instead of the importer.)
+  //   live plan            -> the plan. That is what the app is for.
+  //   no plan, no attempts -> Setup. They have imported and told it nothing
+  //                           else, so the plan is empty for a reason they can
+  //                           fix on that screen.
+  //   no plan, but history -> Dashboard. Their own work is the useful thing to
+  //                           show while the test date is missing or past.
+  const worked = (State.boot.stats && State.boot.stats.total) > 0;
+  go(State.boot.bankOk === false ? 'import'
+    : State.boot.planLive ? 'plan'
+    : (worked ? 'dashboard' : 'setup'));
 })();
+
+/* ======================================================================= */
+/* MOVE MY DATA                                                             */
+/* ======================================================================= */
+/* migrate.py did this from a terminal, which rules it out for most of the
+   people who need it. The ones with an older copy are by definition the ones
+   who already have months of work to lose, so making them type a path into a
+   black window was exactly backwards.
+
+   Two steps on purpose. SCAN reads the old folder and shows what it found,
+   before anything is touched. Only then does the second button do any copying.
+   Nobody should have to trust a progress bar with their only copy of a year of
+   practice. */
+async function viewMigrate() {
+  const box = el('input', { type: 'text', placeholder: 'C:\\Users\\you\\Desktop\\Cat Prep',
+    style: { flex: 1, minWidth: '0' } });
+  const scanBtn = el('button.btn.primary', 'Look in this folder');
+  const found = el('div');
+  const runBox = el('div');
+  let scanned = null;
+  let polling = false;
+
+  function row(label, value, hint) {
+    return el('div.row.tight',
+      el('span.faint', { style: { minWidth: '210px' } }, label),
+      el('strong', value === null || value === undefined ? '0' : String(value)),
+      hint ? el('span.faint', hint) : null);
+  }
+
+  async function doScan() {
+    if (!box.value.trim()) { toast('Paste the folder first.', true); return; }
+    scanBtn.disabled = true;
+    fill(found, el('p.sub', 'Reading that folder...'));
+    const out = await api('setup/migrate/scan', { body: { path: box.value } });
+    scanBtn.disabled = false;
+    if (!out || out.error || !out.found) {
+      scanned = null;
+      fill(found, el('div.card', { style: { borderColor: 'var(--red)' } },
+        el('p.sub', { style: { color: 'var(--red)' } },
+          (out && (out.error || out.bankMessage)) || 'Could not read that folder.')));
+      fill(runBox);
+      return;
+    }
+    scanned = out;
+    const s = out.source;
+    fill(found,
+      el('div.card',
+        el('h2', 'Found in that folder'),
+        el('p.faint', out.path),
+        el('div', { style: { marginTop: '10px' } },
+          row('questions in the bank', s.questions),
+          row('practice sittings', s.sessions),
+          row('answered questions', s.attempts),
+          row('question images', (s.images || 0).toLocaleString()),
+          row('source PDFs', s.pdfs),
+          row('profile and test dates', s.profile ? 'yes' : 'no'))));
+
+    const here = out.here || {};
+    const willOverwrite = (here.questions || 0) > 0 || (here.attempts || 0) > 0;
+    const goBtn = el('button.btn.primary.lg', 'Move it all over');
+    goBtn.onclick = () => startMove();
+    fill(runBox,
+      willOverwrite
+        ? el('div.card', { style: { borderColor: 'var(--orange)' } },
+            el('p.sub', { style: { color: 'var(--orange)' } },
+              `This copy already has ${(here.questions || 0).toLocaleString()} questions and `
+              + `${(here.attempts || 0).toLocaleString()} answered questions in it. `
+              + 'Moving will write over them.'))
+        : null,
+      el('div.row', { style: { marginTop: '14px' } }, goBtn,
+        el('span.faint', 'The images take a few minutes. Your old folder is only read, never changed.')));
+  }
+
+  async function startMove() {
+    const started = await api('setup/migrate/start', { body: { path: box.value } });
+    if (!started || started.error) { toast((started && started.error) || 'Could not start.', true); return; }
+    fill(found);
+    polling = true;
+    poll();
+  }
+
+  async function poll() {
+    if (!polling) return;
+    /* nav:false, same reason the importer polls that way: this has to survive
+       whatever the user clicks for the several minutes a copy takes. */
+    const p = await api('setup/migrate/progress', { quiet: true, nav: false });
+    if (!p || p.offline || !p.state) { return setTimeout(poll, 1500); }
+
+    const pct = Math.round((p.progress || 0) * 100);
+    const done = p.state === 'done';
+    const bad = p.state === 'error';
+    fill(runBox,
+      el('div.card',
+        el('div.row',
+          el('h2', done ? 'Everything arrived' : bad ? 'Something is missing' : 'Moving your data'),
+          el('div.spacer', { style: { flex: 1 } }),
+          el('span.faint', `${(p.copied || 0).toLocaleString()} / ${(p.total || 0).toLocaleString()} \u00b7 ${p.elapsed}s`)),
+        el('div.bar', el('i', { style: {
+          width: `${done ? 100 : Math.min(97, pct)}%`,
+          background: bad ? 'var(--red)' : 'var(--green)' } })),
+        el('p.faint', { style: { marginTop: '8px' } }, p.message || ''),
+        ...(p.problems || []).map((x) => el('p.sub', { style: { color: 'var(--red)' } }, x)),
+        p.after
+          ? el('div', { style: { marginTop: '12px' } },
+              row('questions in the bank', p.after.questions),
+              row('practice sittings', p.after.sessions),
+              row('answered questions', p.after.attempts),
+              row('question images', (p.after.images || 0).toLocaleString()))
+          : null,
+        done
+          ? el('div', { style: { marginTop: '14px' } },
+              el('button.btn.primary.lg', { onclick: async () => {
+                await refreshBoot(); renderNav(); go('plan');
+              } }, 'Open my plan'),
+              el('p.faint', { style: { marginTop: '10px' } },
+                'Keep the old folder until you have clicked around and seen your '
+                + 'history. Then you can delete it.'))
+          : null));
+
+    if (p.state === 'copying') { setTimeout(poll, 800); } else { polling = false; }
+  }
+
+  scanBtn.onclick = doScan;
+  box.onkeydown = (e) => { if (e.key === 'Enter') doScan(); };
+
+  mount(
+    el('div.head', el('div',
+      el('h1', '📦 Move My Data'),
+      State.boot?.bankOk ? el('button.btn.sm.ghost', { style: { marginLeft: '12px' },
+        onclick: () => go('setup') }, 'Back to Setup') : null,
+      el('div.sub', 'Bring your question bank, practice history and profile over '
+        + 'from an older copy of Cat Prep.'))),
+
+    el('div.card',
+      el('h2', 'Where is the old copy?'),
+      el('p.sub', 'Open the old folder, click the address bar at the top of the '
+        + 'window so the path highlights, copy it, and paste it here. It is the '
+        + 'folder that holds "Cat Sat", or a "CatPrep Data" folder.'),
+      el('div.row', { style: { marginTop: '12px' } }, box, scanBtn)),
+
+    found,
+    runBox,
+
+    el('div.card',
+      el('h2', 'What this does'),
+      el('p.faint', 'It copies the databases as complete sets, so nothing is left '
+        + 'behind in the write-ahead log that a plain file copy would miss. It '
+        + 'counts the rows on both sides afterwards and tells you if anything is '
+        + 'short. It never writes to the old folder, so if anything goes wrong '
+        + 'that folder is still a complete, working install.')));
+
+  /* Reconnect to a move already running, if the screen was reopened. */
+  const already = await api('setup/migrate/progress', { quiet: true });
+  if (already && already.state === 'copying') { polling = true; poll(); }
+}
