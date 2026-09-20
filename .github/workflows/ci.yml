@@ -120,7 +120,7 @@ jobs:
           - os: macos-latest
             label: macos-apple-silicon
             archive: CatPrep-macos-apple-silicon.zip
-          - os: macos-13
+          - os: macos-15-intel
             label: macos-intel
             archive: CatPrep-macos-intel.zip
           - os: ubuntu-latest
@@ -181,7 +181,7 @@ jobs:
           # The launcher prints the URL it picked; read it back out of stdout.
           proc = subprocess.Popen([exe], env={**os.environ, "CATPREP_NO_BROWSER": "1"},
                                   stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                                  text=True, bufsize=1)
+                                  text=True, encoding="utf-8", errors="replace", bufsize=1)
           url, log = [], []
           def watch():
               for line in proc.stdout:
