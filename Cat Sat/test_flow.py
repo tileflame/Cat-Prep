@@ -22,6 +22,7 @@ from dataclasses import dataclass, field
 import adaptive_engine as engine
 import attempt_repo
 from config import (
+    BLUEPRINT,
     DEFAULT_ROUTING_THRESHOLD,
     FULL_TEST_SECTION_ORDER,
     TIER_BASELINE,
@@ -32,6 +33,12 @@ MODE_FULL = "full_test"
 MODE_SECTION = "section_test"
 MODE_DRILL = "drill"
 MODE_REVIEW = "review"
+# Answer, check it straight away, read why, move on. One module like a drill,
+# but the correct answer is revealed per question instead of at the end.
+MODE_CHECK = "check"
+
+#: Modes that are one module and done, with no routing into a Module 2.
+SINGLE_MODULE_MODES = (MODE_DRILL, MODE_REVIEW, MODE_CHECK)
 
 # What run()/advance() can return.
 STEP_MODULE = "module"      # payload: ModulePlan
@@ -135,8 +142,13 @@ class TestRunner:
         drill_time_limit: int | None = None,
         config_snapshot: dict | None = None,
         rng: random.Random | None = None,
+        fixed_modules: dict | None = None,
     ):
         self.mode = mode
+        # A numbered practice test hands in its modules ready-made, keyed
+        # (section, module number, tier). Anything not in here is built fresh,
+        # which is what every ordinary test does.
+        self.fixed_modules = fixed_modules or {}
         self.label = label or self._default_label(mode, sections)
         self.timed = timed
         self.threshold = threshold
@@ -206,7 +218,7 @@ class TestRunner:
 
     def start(self):
         """Return the first step: a module to sit, or done if nothing built."""
-        if self.mode in (MODE_DRILL, MODE_REVIEW):
+        if self.mode in SINGLE_MODULE_MODES:
             return self._start_drill()
         return self._start_section(0)
 
@@ -229,13 +241,36 @@ class TestRunner:
         self.section_index = index
         section = self.current_section
         self.outcomes.append(SectionOutcome(section=section))
-        plan = engine.build_module(
-            section, 1, TIER_BASELINE,
-            exclude_ids=set(self.used_ids), seen_counts=self.seen, rng=self.rng,
-        )
+        plan = self._module_plan(section, 1, TIER_BASELINE)
         if not plan.questions:
             return STEP_DONE, self._finish()
         return self._serve(plan)
+
+    def _module_plan(self, section: str, module_number: int, tier: str):
+        """
+        The module to sit next: the stored one for a numbered practice test,
+        otherwise a freshly assembled one. Routing, timing and scoring are the
+        same either way, which is the point: Practice Test 3 is graded exactly
+        like any other adaptive test.
+        """
+        fixed = self.fixed_modules.get((section, module_number, tier))
+        if fixed is None:
+            return engine.build_module(
+                section, module_number, tier,
+                exclude_ids=set(self.used_ids), seen_counts=self.seen, rng=self.rng,
+            )
+        blueprint = BLUEPRINT.get(section) or {}
+        minutes = blueprint.get("minutes_per_module", 0)
+        target = blueprint.get("questions_per_module", len(fixed))
+        return engine.ModulePlan(
+            section=section,
+            module_number=module_number,
+            tier=tier,
+            questions=list(fixed),
+            time_limit_seconds=int(minutes * 60 * len(fixed) / max(target, 1)),
+            target_count=target,
+            difficulty_actual=engine._count_by_difficulty(fixed),
+        )
 
     def _serve(self, plan):
         """Register a module and hand it to the caller."""
@@ -275,7 +310,7 @@ class TestRunner:
         self.all_records.extend(records)
 
         # ---- Drills and review sessions have no second module.
-        if self.mode in (MODE_DRILL, MODE_REVIEW):
+        if self.mode in SINGLE_MODULE_MODES:
             attempt_repo.finish_module(
                 self.current_module_row_id, correct_count=result.correct,
                 raw_accuracy=result.raw_accuracy,
@@ -298,10 +333,7 @@ class TestRunner:
             outcome.final_tier = next_tier
             outcome.routing_note = engine.routing_explanation(result, next_tier, self.threshold)
 
-            next_plan = engine.build_module(
-                plan.section, 2, next_tier,
-                exclude_ids=set(self.used_ids), seen_counts=self.seen, rng=self.rng,
-            )
+            next_plan = self._module_plan(plan.section, 2, next_tier)
             if not next_plan.questions:
                 return STEP_DONE, self._finish()
 

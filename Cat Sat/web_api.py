@@ -19,7 +19,9 @@ from datetime import date, timedelta
 import adaptive_engine as engine
 import attempt_repo
 import diagnostic
+import practice_tests
 import question_repo
+import skill_tags
 import study_plan
 import test_flow
 from config import (
@@ -33,7 +35,8 @@ from config import (
 )
 from database import get_setting, question_bank_is_usable, set_setting
 from models import AttemptRecord
-from test_flow import MODE_DRILL, MODE_FULL, MODE_REVIEW, MODE_SECTION, TestRunner
+from test_flow import (MODE_CHECK, MODE_DRILL, MODE_FULL, MODE_REVIEW, MODE_SECTION,
+                       SINGLE_MODULE_MODES, TestRunner)
 
 DIFFICULTY_RANK = {"Easy": 0, "Medium": 1, "Hard": 2}
 BANNED_PHRASES = ("read carefully", "read more carefully", "be careful",
@@ -201,6 +204,15 @@ def _app_version() -> str:
         return setup_api.VERSION
     except Exception:                                     # noqa: BLE001
         return ""
+
+
+def engine_cache_bust() -> None:
+    """Skills just changed under the bank: drop anything computed from the old ones."""
+    try:
+        import plan_builder
+        plan_builder.clear_plan_cache()
+    except Exception:                                     # noqa: BLE001
+        pass
 
 
 class Api:
@@ -433,6 +445,126 @@ class Api:
             rng=self.rng)
         return self._begin(runner)
 
+    # ---------------------------------------------------- numbered practice tests
+
+    def practice_tests(self) -> dict:
+        ok, message = question_bank_is_usable()
+        return {"tests": practice_tests.list_tests(), "bankOk": ok, "bankMessage": message,
+                "skills": self.skill_status() if ok else None}
+
+    def skill_status(self) -> dict:
+        """How much of the bank knows its question types, and whether the PDFs are here."""
+        blank, total = skill_tags.blank_count()
+        return {"blank": blank, "total": total,
+                "pdfs": [p.name for p in skill_tags.question_pdfs()]}
+
+    def recover_skills(self) -> dict:
+        result = skill_tags.recover()
+        engine_cache_bust()
+        return result
+
+    def build_practice_tests(self) -> dict:
+        """
+        Append as many new numbered tests as the unused bank allows.
+
+        Recovers question types from the PDFs first if the bank has none
+        recorded. That is the state of every bank imported before skills were
+        read, and without them a test can only be shaped by domain and
+        difficulty. With them it is shaped question type by question type.
+        """
+        ok, message = question_bank_is_usable()
+        if not ok:
+            return {"error": message}
+        recovered = None
+        blank, _total = skill_tags.blank_count()
+        if blank and skill_tags.question_pdfs():
+            recovered = self.recover_skills()
+        result = practice_tests.build_more()
+        result["tests"] = practice_tests.list_tests()
+        result["skillsRecovered"] = recovered
+        result["skills"] = self.skill_status()
+        return result
+
+    def start_practice_test(self, *, number: int, sections: list | None = None,
+                            timed: bool = True,
+                            threshold: float = DEFAULT_ROUTING_THRESHOLD,
+                            weighted: bool = True) -> dict:
+        number = int(number)
+        modules = practice_tests.modules_for(number)
+        if not modules:
+            return {"error": f"There is no Practice Test {number}. Build your tests "
+                             "from the Test tab first."}
+        chosen = [s for s in (sections or practice_tests.SECTIONS)
+                  if any(key[0] == s for key in modules)]
+        if not chosen:
+            return {"error": "That test has no questions left in the bank for that section."}
+        full = len(chosen) == len(practice_tests.SECTIONS)
+        label = practice_tests.label_for(number) + ("" if full else f", {chosen[0]}")
+        runner = TestRunner(
+            MODE_FULL if full else MODE_SECTION,
+            sections=chosen, label=label, timed=timed, threshold=threshold,
+            use_weighting=weighted, fixed_modules=modules,
+            config_snapshot={"practiceTest": number, "sections": chosen, "timed": timed,
+                             "threshold": threshold, "weighted": weighted},
+            rng=self.rng)
+        return self._begin(runner)
+
+    # ------------------------------------------------------------- check mode
+
+    def start_check(self, *, section: str, domains: list | None = None,
+                    count: int = 10, difficulty: str | None = None,
+                    ramp: bool = True) -> dict:
+        """
+        A set of questions answered one at a time, each checked the moment you
+        commit to it. Built like a fresh drill, sat without a clock.
+        """
+        count = max(1, min(int(count or 10), 100))
+        questions = engine.build_drill(
+            section=section, domains=domains or [], count=count,
+            difficulty_ramp=ramp, difficulty_filter=difficulty,
+            seen_counts=attempt_repo.seen_counts(), rng=self.rng)
+        if not questions:
+            return {"error": "No questions matched. Try more domains or another difficulty."}
+        where = ", ".join(domains) if domains else section
+        runner = TestRunner(
+            MODE_CHECK, sections=[section],
+            label=f"Check mode, {where}, {len(questions)}q",
+            timed=False, drill_questions=questions,
+            config_snapshot={"section": section, "domains": domains or [],
+                             "count": count, "difficulty": difficulty, "ramp": ramp},
+            rng=self.rng)
+        result = self._begin(runner)
+        result["perQuestionTimer"] = True
+        return result
+
+    def check_answer(self, index: int, answer: str) -> dict:
+        """
+        Grade ONE question of the sitting in progress, and hand back the key.
+
+        Only in check mode. Everywhere else the correct answer stays on the
+        server until the module is submitted, and this refuses rather than
+        becoming a way to read a test's answers one at a time.
+        """
+        if self.runner is None or self.current_plan is None:
+            return {"error": "No sitting in progress."}
+        if self.runner.mode != MODE_CHECK:
+            return {"error": "Answers are only revealed one at a time in check mode."}
+        questions = self.current_plan.questions
+        try:
+            question = questions[int(index)]
+        except (ValueError, IndexError, TypeError):
+            return {"error": "No such question."}
+        given = str(answer or "").strip()
+        return {
+            "index": int(index),
+            "correct": bool(given) and question.check(given),
+            "correctAnswer": question.correct_answer,
+            "rationale": (f"/img/{question.question_id}?kind=rationale"
+                          if question.has_rationale else None),
+            "rationaleText": (question.rationale or "").strip()
+            if not question.has_rationale else "",
+        }
+
     def start_drill(self, *, section: str, domains: list, count: int,
                     difficulty: str | None = None, ramp: bool = True,
                     timer: str = "Per-question stopwatch", source: str = "fresh") -> dict:
@@ -591,7 +723,7 @@ class Api:
             self.current_plan = payload
             self._cache_images(payload.questions)
             runner = self.runner
-            context = (runner.label if runner and runner.mode in (MODE_DRILL, MODE_REVIEW)
+            context = (runner.label if runner and runner.mode in SINGLE_MODULE_MODES
                        else f"{payload.section}, Module {payload.module_number} of 2")
             return {"step": "module", "module": plan_json(payload),
                     "context": context,

@@ -289,7 +289,7 @@ const State = { boot: null, route: 'import', quiz: null, summary: null, day: nul
 
 const ROUTES = [
   ['plan', '📋 Plan'], ['calendar', '🗓 Calendar'], ['test', '🎯 Test'], ['drill', '🎓 Drill'],
-  ['log', '🔬 Error Log'], ['history', '🕘 History'], ['dashboard', '📊 Dashboard'],
+  ['check', '✅ Check Mode'], ['log', '🔬 Error Log'], ['history', '🕘 History'], ['dashboard', '📊 Dashboard'],
   ['setup', '⚙ Setup'],
 ];
 
@@ -747,7 +747,7 @@ async function viewCalendar(arg) {
 /* TEST SETUP                                                               */
 /* ======================================================================= */
 async function viewTest() {
-  const bank = await api('bank');
+  const [bank, stored] = await Promise.all([api('bank'), api('tests')]);
   const s = bank.settings;
   const state = {
     length: s.length === 'Full length' ? 'full' : 'section',
@@ -812,10 +812,78 @@ async function viewTest() {
     el('label.check', el('input', { type: 'checkbox', checked: state.weighted || null, onchange: (e) => { state.weighted = e.target.checked; } }),
       'Weight routing by question difficulty'));
 
+  /* --- numbered practice tests: Practice Test 1, 2, 3, fixed once built */
+  const testsCard = el('div.card');
+  let buildNote = '';
+  const sit = (t, sectionsWanted) => startPractice({
+    number: t.number, sections: sectionsWanted, timed: state.timed,
+    threshold: state.threshold / 100, weighted: state.weighted });
+
+  function drawTests(tests) {
+    const rows = tests.map((t) => {
+      const status = t.sittings.length
+        ? `Taken ${when(t.lastTaken)}${t.best ? ` · best ${t.best}` : ''}`
+        : (t.seen ? `${t.seen} of its ${t.questions} questions already seen in practice`
+                  : 'Fresh, none of its questions seen yet');
+      return el('div.item.testrow',
+        el('div', el('strong', t.label), el('div.faint', status)),
+        el('div.spacer', { style: { flex: 1 } }),
+        el('button.btn.primary.sm', { onclick: () => sit(t) }, 'Full test ►'),
+        el('button.btn.ghost.sm', { onclick: () => sit(t, ['Reading and Writing']) }, 'R&W only'),
+        el('button.btn.ghost.sm', { onclick: () => sit(t, ['Math']) }, 'Math only'));
+    });
+    fill(testsCard,
+      el('div.row', el('h2', '📚 Practice Tests'), el('div.spacer', { style: { flex: 1 } }),
+        tests.length ? el('span.pill.blue', plural(tests.length, 'test')) : null),
+      el('p.sub', 'Built once from your own question bank and then kept, so Practice Test 3 is '
+        + 'the same test every time. Shaped like Bluebook down to the question type: each '
+        + 'Reading and Writing module opens with vocabulary and runs through every type in '
+        + 'Bluebook order to Rhetorical Synthesis, easiest to hardest inside each. Math runs '
+        + 'easiest to hardest. No two tests share a question, and each one keeps both '
+        + 'Module 2 forms, so it adapts exactly like the real thing.'),
+      tests.length ? el('div.list', { style: { marginTop: '10px' } }, rows)
+        : el('p.faint', { style: { marginTop: '10px' } }, 'No practice tests yet.'),
+      buildNote ? el('p.faint', { style: { marginTop: '8px' } }, buildNote) : null,
+      (stored?.skills?.blank && !stored?.skills?.pdfs?.length)
+        ? el('p', { style: { marginTop: '8px', color: 'var(--orange)', fontSize: '13px' } },
+            `${stored.skills.blank.toLocaleString()} questions have no question type recorded, and the PDFs they `
+            + 'came from are not in the app\'s pdfs folder, so tests are shaped by domain and difficulty only. '
+            + 'Import the same PDFs again and the question types are read automatically.')
+        : null,
+      el('div.row', { style: { marginTop: '10px' } },
+        el('button.btn.sm', { onclick: build },
+          tests.length ? 'Build more from unused questions' : 'Build my practice tests')));
+  }
+
+  async function build() {
+    const blank = stored?.skills?.blank || 0;
+    fill(testsCard, el('h2', '📚 Practice Tests'),
+      el('p.sub', blank && stored?.skills?.pdfs?.length
+        ? `Reading the question type of ${blank.toLocaleString()} questions from your PDFs, then assembling as many Bluebook-shaped tests as your bank can make. This takes a minute.`
+        : 'Assembling as many Bluebook-shaped tests as your question bank can make...'),
+      el('div.spin'));
+    const r = await api('tests/build', { body: {} });
+    if (!r || r.error) {
+      toast(r?.error || "Couldn't build the tests.", true);
+      return drawTests(stored?.tests || []);
+    }
+    const read = r.skillsRecovered?.filled
+      ? `Read the question type of ${r.skillsRecovered.filled.toLocaleString()} questions from your PDFs first. `
+      : '';
+    buildNote = read + (r.built
+      ? `Built ${plural(r.built, 'new test')}. ${r.stoppedBecause ? `Stopped there because ${r.stoppedBecause}.` : ''}`
+      : `No new tests. ${r.stoppedBecause ? `That is because ${r.stoppedBecause}.` : ''}`);
+    if (stored) stored.skills = r.skills;
+    drawTests(r.tests || []);
+  }
+
   drawPreview();
   mount(
-    el('div.head', el('div', el('h1', '🎯 Adaptive Practice Test'),
-      el('p.sub', 'Module 1 is a mixed-difficulty baseline. Your accuracy on it decides whether Module 2 is the harder or the easier form.'))),
+    el('div.head', el('div', el('h1', '🎯 Test'),
+      el('p.sub', 'Numbered practice tests shaped like Bluebook, or a fresh adaptive test assembled on the spot.'))),
+    testsCard,
+    el('h2', { style: { margin: '22px 0 4px' } }, '🎲 Custom adaptive test'),
+    el('p.sub', { style: { marginBottom: '10px' } }, 'A new test every time. Module 1 is a mixed-difficulty baseline, and your accuracy on it decides whether Module 2 is the harder or the easier form. Timing and routing here apply to the practice tests too.'),
     el('div.grid.c2', setup, preview),
     el('div.row', { style: { marginTop: '4px' } },
       el('button.btn.primary.lg', {
@@ -826,6 +894,9 @@ async function viewTest() {
           startTest({ mode: state.length, sections: sections(), timed: state.timed, threshold: state.threshold / 100, weighted: state.weighted });
         },
       }, '🚀 Start test')));
+
+  if (!(stored?.tests || []).length && stored?.bankOk) build();
+  else drawTests(stored?.tests || []);
 }
 
 /* ======================================================================= */
@@ -926,10 +997,94 @@ async function viewDrill(preselect) {
 }
 
 /* ======================================================================= */
+/* CHECK MODE SETUP                                                         */
+/* ======================================================================= */
+/* The third way to practise, alongside Test and Drill. Those two hold every
+   answer back until the end, which is right for building stamina and wrong for
+   learning a question type you do not understand yet: by the time the review
+   screen tells you question 3 was wrong, you have made the same mistake on
+   questions 4 through 12. Here you commit to an answer, check it on the spot,
+   read why, and carry that into the next one. No clock. */
+async function viewCheck(preselect) {
+  const bank = await api('bank' + (preselect?.section ? `?section=${encodeURIComponent(preselect.section)}` : ''));
+  const chosen = new Set(preselect?.domains || []);
+  if (!chosen.size) {
+    const weakest = bank.weakest?.[0]?.bucket;
+    chosen.add(bank.domains.some((d) => d.name === weakest) ? weakest : bank.domains[0]?.name);
+  }
+  const state = { section: bank.section, count: '10', difficulty: '', ramp: true };
+  const availability = el('div.faint');
+
+  function updateAvailability() {
+    let total = 0;
+    const names = [...chosen].filter(Boolean);
+    for (const name of (names.length ? names : bank.domains.map((d) => d.name))) {
+      total += state.difficulty
+        ? (bank.difficultyCounts[`${name}|${state.difficulty}`] || 0)
+        : (bank.domains.find((d) => d.name === name)?.count || 0);
+    }
+    availability.textContent = `${plural(total, 'question')} match this filter`;
+    availability.style.color = total ? 'var(--dim)' : 'var(--orange)';
+  }
+
+  const domainList = el('div.list',
+    bank.domains.map((d) => el('label.check',
+      el('input', {
+        type: 'checkbox', checked: chosen.has(d.name) || null,
+        onchange: (e) => { e.target.checked ? chosen.add(d.name) : chosen.delete(d.name); updateAvailability(); },
+      }),
+      el('span', d.name),
+      el('div.spacer', { style: { flex: 1 } }),
+      d.accuracy !== null ? el('span.pill', { style: { color: accColor(d.accuracy) } }, pct(d.accuracy)) : null,
+      el('span.faint', `${d.count} in bank`))));
+
+  const setup = el('div.card',
+    el('h2', 'Setup'),
+    el('div.field', el('label', 'Section'),
+      el('select', { onchange: (e) => viewCheck({ section: e.target.value }) },
+        bank.sections.map((n) => el('option', { value: n, selected: n === state.section || null }, n)))),
+    el('div.field', el('label', 'How many questions'),
+      el('input', { type: 'number', min: '1', max: '100', value: state.count, onchange: (e) => { state.count = e.target.value; } })),
+    el('div.field', el('label', 'Difficulty'),
+      el('label.check', el('input', { type: 'checkbox', checked: true, onchange: (e) => { state.ramp = e.target.checked; } }), 'Ramp Easy → Medium → Hard'),
+      el('select', { onchange: (e) => { state.difficulty = e.target.value; updateAvailability(); } },
+        [['', 'All difficulties'], ['Easy', 'Easy'], ['Medium', 'Medium'], ['Hard', 'Hard']].map(([v, l]) =>
+          el('option', { value: v, selected: v === state.difficulty || null }, l)))),
+    el('div.card.sunken', { style: { marginTop: '6px' } },
+      el('strong', 'How it works'),
+      el('ol', { style: { margin: '8px 0 0 18px', color: 'var(--dim)', fontSize: '13px', lineHeight: 1.6 } },
+        el('li', 'Pick your answer. You can still change your mind.'),
+        el('li', 'Press Check (or Enter). Your answer locks.'),
+        el('li', 'See whether it was right, the correct choice, and the full explanation.'),
+        el('li', 'Next question. Everything you answer still counts in History and the Error Log.'))));
+
+  const domains = el('div.card',
+    el('div.row', el('h2', 'Domains'), el('div.spacer', { style: { flex: 1 } }),
+      el('button.btn.ghost.sm', { onclick: () => { chosen.clear(); bank.domains.forEach((d) => chosen.add(d.name)); viewCheck({ section: state.section, domains: [...chosen] }); } }, 'All'),
+      el('button.btn.ghost.sm', { onclick: () => { chosen.clear(); domainList.querySelectorAll('input').forEach((b) => { b.checked = false; }); updateAvailability(); } }, 'None')),
+    domainList, availability);
+
+  updateAvailability();
+  mount(
+    el('div.head', el('div', el('h1', '✅ Check Mode'),
+      el('p.sub', 'Answer a question and see straight away whether you got it, and why. The fastest way to learn a question type you keep missing.'))),
+    el('div.grid.c2', setup, domains),
+    el('div.row', el('button.btn.primary.lg', {
+      onclick: () => {
+        const n = parseInt(state.count, 10);
+        if (!n || n < 1) return toast('Enter a whole number of questions (e.g. 10).', true);
+        startCheck({ section: state.section, domains: [...chosen].filter(Boolean), count: n, difficulty: state.difficulty || null, ramp: state.ramp });
+      },
+    }, '✅ Start checking')));
+}
+
+/* ======================================================================= */
 /* SITTING LIFECYCLE                                                        */
 /* ======================================================================= */
 async function startTest(body) { handleStep(await api('start/test', { body })); }
 async function startDrill(body) { handleStep(await api('start/drill', { body })); }
+async function startCheck(body) { handleStep(await api('start/check', { body })); }
+async function startPractice(body) { handleStep(await api('start/practice', { body })); }
 async function startRedo(limit) { handleStep(await api('start/redo', { body: { limit: limit || 10 } })); }
 async function startPool(ids, label) { handleStep(await api('start/pool', { body: { questionIds: ids, label } })); }
 
@@ -957,8 +1112,13 @@ function renderQuiz(payload) {
     remaining: payload.timed ? module.timeLimit : null,
     perQuestion: !!payload.perQuestionTimer, crossOut: false, hidden: false,
     started: Date.now(), submitted: false, zoom: 1,
+    checked: {},          // check mode: index -> what the server said about it
   };
   State.quiz = Q;
+  // Check mode: each answer is graded the moment you commit to it, and then
+  // locked. Everything else about the sitting is the same quiz screen.
+  const checkMode = payload.mode === 'check';
+  const hasMath = questions.some((q) => q.section === 'Math');
 
   /* --- chrome */
   const ctx = el('div.ctx', payload.context);
@@ -971,31 +1131,41 @@ function renderQuiz(payload) {
   const img = el('img', { alt: 'Question', decoding: 'async' });
   const imgWrap = el('div.qwrap', img);
   const choicesEl = el('div.choices');
-  const gridIn = el('input', { type: 'text', placeholder: 'Type your answer (fractions like 3/4 are fine)…', oninput: (e) => { Q.answers[Q.index] = e.target.value; } });
+  const gridIn = el('input', { type: 'text', placeholder: 'Type your answer (fractions like 3/4 are fine)…', oninput: (e) => { if (!Q.checked[Q.index]) Q.answers[Q.index] = e.target.value; if (checkMode) paintState(); } });
   const answers = el('div.answers');
   const prevBtn = el('button.btn', { onclick: () => move(-1) }, '◄ Previous');
   const nextBtn = el('button.btn.blue', { onclick: () => move(1) }, 'Next ►');
+  const feedback = el('div.checkfb');
+  const checkBtn = el('button.btn.primary', { onclick: () => doCheck() }, 'Check ✓');
+  let refPanel = null;
+  function toggleReference() {
+    if (refPanel) { refPanel.remove(); refPanel = null; return; }
+    refPanel = referenceSheet(() => { refPanel?.remove(); refPanel = null; });
+    shell.append(refPanel);
+  }
 
   const shell = el('div.quiz',
     el('div.quizbar', ctx,
-      module.tier && payload.mode !== 'drill' ? el('span.pill.blue', module.tierLabel?.split('-')[0]?.trim()) : null,
+      module.tier && !['drill', 'review', 'check'].includes(payload.mode) ? el('span.pill.blue', module.tierLabel?.split('-')[0]?.trim()) : null,
       counter, timerBtn, el('div.spacer', { style: { flex: 1 } }),
-      questions.some((q) => q.section === 'Math') ? el('button.btn.ghost.sm', { onclick: openDesmos }, '🧮 Calc') : null,
+      hasMath ? el('button.btn.ghost.sm', { onclick: openDesmos }, '🧮 Calc') : null,
+      hasMath ? el('button.btn.ghost.sm', { onclick: toggleReference, title: 'Formulas (like Bluebook\'s Reference)' }, '📐 Reference') : null,
       el('button.btn.ghost.sm', { onclick: openNotes }, '📝 Note'),
       crossBtn, shakyBtn, flagBtn,
       el('button.btn.primary.sm', { onclick: confirmSubmit }, 'Submit')),
     el('div.progress', progress),
     imgWrap,
     answers,
+    checkMode ? feedback : null,
     el('div.hint', 'A–D answer · ← → navigate · F flag · S not sure · X cross-out '
-      + '· +/− zoom · Esc show tabs'),
+      + '· +/− zoom · Esc show tabs' + (checkMode ? ' · Enter check' : '')),
     el('div.quiznav', prevBtn,
       el('button.btn', { onclick: openIndex }, '🗂 Question index'),
       el('div.zoomer',
         el('button', { onclick: () => zoom(-0.15), title: 'Zoom out (−)' }, '−'),
         el('span.faint', 'zoom'),
         el('button', { onclick: () => zoom(0.15), title: 'Zoom in (+)' }, '＋')),
-      el('div.spacer', { style: { flex: 1 } }), nextBtn));
+      el('div.spacer', { style: { flex: 1 } }), checkMode ? checkBtn : null, nextBtn));
 
   const target = screenEl();
   target.className = 'screen flush';
@@ -1014,19 +1184,25 @@ function renderQuiz(payload) {
     if (q.openEnded) {
       fill(answers, el('div.gridin', gridIn));
       gridIn.value = Q.answers[Q.index] || '';
+      gridIn.readOnly = !!Q.checked[Q.index];
     } else {
       fill(answers, choicesEl);
       paintChoices();
     }
     paintState();
+    paintFeedback();
     prefetch();
   }
 
   function paintChoices() {
     const struck = Q.eliminated[Q.index] || new Set();
     const picked = Q.answers[Q.index];
+    const verdict = Q.checked[Q.index];
+    const key = String(verdict?.correctAnswer || '').trim().toUpperCase();
     fill(choicesEl, ...['A', 'B', 'C', 'D'].map((letter) => {
-      const cls = struck.has(letter) ? '.out' : picked === letter ? '.sel' : '';
+      let cls = struck.has(letter) ? '.out' : picked === letter ? '.sel' : '';
+      // Once checked: the right choice goes green, yours goes red if it was not it.
+      if (verdict) cls = letter === key ? '.right' : picked === letter ? '.wrong' : '.dim';
       const btn = el('button.choice' + cls, letter);
       btn.addEventListener('click', () => (Q.crossOut ? eliminate(letter) : pick(letter)));
       btn.addEventListener('contextmenu', (e) => { e.preventDefault(); eliminate(letter); });
@@ -1040,6 +1216,12 @@ function renderQuiz(payload) {
     shakyBtn.className = 'btn sm ' + (Q.shaky.has(Q.index) ? 'purple' : 'ghost');
     prevBtn.disabled = Q.index === 0;
     nextBtn.textContent = Q.index === questions.length - 1 ? 'Review ►' : 'Next ►';
+    if (checkMode) {
+      const done = !!Q.checked[Q.index];
+      checkBtn.style.display = done ? 'none' : '';
+      checkBtn.disabled = !String(Q.answers[Q.index] || '').trim();
+      nextBtn.className = 'btn ' + (done ? 'primary' : 'blue');
+    }
     if (!questions[Q.index].openEnded) paintChoices();
   }
 
@@ -1069,16 +1251,44 @@ function renderQuiz(payload) {
   function jump(i) { bankTime(); Q.index = i; paintQuestion(); }
 
   function pick(letter) {
+    if (Q.checked[Q.index]) return;
     if ((Q.eliminated[Q.index] || new Set()).has(letter)) return;
     Q.answers[Q.index] = Q.answers[Q.index] === letter ? '' : letter;
     paintState();
   }
   function eliminate(letter) {
+    if (Q.checked[Q.index]) return;
     if (Q.answers[Q.index] === letter) return;
     const set = (Q.eliminated[Q.index] ||= new Set());
     set.has(letter) ? set.delete(letter) : set.add(letter);
     paintState();
   }
+  async function doCheck() {
+    if (!checkMode || Q.checked[Q.index]) return;
+    const answer = String(Q.answers[Q.index] || '').trim();
+    if (!answer) return toast('Pick an answer first, then check it.', true);
+    const at = Q.index;
+    checkBtn.disabled = true;
+    const r = await api('check', { body: { index: at, answer } });
+    if (!r || r.error) { checkBtn.disabled = false; return toast(r?.error || "Couldn't check that one.", true); }
+    Q.checked[at] = r;
+    if (Q.index === at) { paintState(); paintFeedback(); if (questions[at].openEnded) gridIn.readOnly = true; }
+  }
+
+  function paintFeedback() {
+    if (!checkMode) return;
+    const r = Q.checked[Q.index];
+    if (!r) { feedback.className = 'checkfb'; fill(feedback); return; }
+    feedback.className = 'checkfb ' + (r.correct ? 'good' : 'bad');
+    fill(feedback,
+      el('div.verdict', r.correct ? '✓ Correct' : `✗ Not quite. The answer is ${r.correctAnswer}.`),
+      r.rationale
+        ? el('img.rationale', { src: r.rationale, alt: 'Explanation', decoding: 'async' })
+        : r.rationaleText
+          ? el('p.rationaletext', r.rationaleText)
+          : el('p.faint', 'No explanation was saved with this question.'));
+  }
+
   function toggleFlag() { Q.flagged.has(Q.index) ? Q.flagged.delete(Q.index) : Q.flagged.add(Q.index); paintState(); }
   function toggleShaky() { Q.shaky.has(Q.index) ? Q.shaky.delete(Q.index) : Q.shaky.add(Q.index); paintState(); }
 
@@ -1107,6 +1317,10 @@ function renderQuiz(payload) {
   /* --- keyboard */
   function onKey(e) {
     if (Q.submitted) return;
+    if (checkMode && e.key === 'Enter' && document.activeElement?.tagName !== 'TEXTAREA') {
+      e.preventDefault();
+      return Q.checked[Q.index] ? move(1) : doCheck();
+    }
     const typing = ['INPUT', 'TEXTAREA'].includes(document.activeElement?.tagName);
     if (typing && e.key !== 'Escape') return;
     const key = e.key.toLowerCase();
@@ -1172,6 +1386,62 @@ function renderQuiz(payload) {
   }
 
   paintQuestion();
+}
+
+/* The Math reference sheet, the panel behind Bluebook's "Reference" button.
+
+   Drawn here rather than shown as a picture: it is the standard set of
+   geometry formulas and three facts about angles, it has to work with no
+   internet (Desmos is a popup and needs one), and line drawings in
+   currentColor stay sharp and readable in the dark theme at any zoom.
+
+   It opens beside the question, not over it, because the whole point of a
+   reference is to read it and the question at the same time. */
+const REF_FIGURES = [
+  ['Circle', 'A = πr²<br>C = 2πr',
+    '<circle cx="60" cy="44" r="32"/><circle cx="60" cy="44" r="2" class="dot"/><line x1="60" y1="44" x2="92" y2="44"/><text x="73" y="39">r</text>'],
+  ['Rectangle', 'A = ℓw',
+    '<rect x="18" y="20" width="84" height="48"/><text x="56" y="84">ℓ</text><text x="107" y="48">w</text>'],
+  ['Triangle', 'A = ½bh',
+    '<polygon points="14,70 106,70 72,14"/><line x1="72" y1="14" x2="72" y2="70" class="dash"/><rect x="72" y="62" width="8" height="8" class="thin"/><text x="56" y="86">b</text><text x="76" y="44">h</text>'],
+  ['Right triangle', 'c² = a² + b²',
+    '<polygon points="24,70 100,70 24,16"/><rect x="24" y="62" width="8" height="8" class="thin"/><text x="10" y="46">a</text><text x="58" y="86">b</text><text x="66" y="38">c</text>'],
+  ['Special right triangle', '30°-60°-90°',
+    '<polygon points="20,70 106,70 20,20"/><rect x="20" y="62" width="8" height="8" class="thin"/><text x="6" y="48">x</text><text x="50" y="86">x√3</text><text x="66" y="40">2x</text><text x="23" y="44" class="small">60°</text><text x="64" y="67" class="small">30°</text>'],
+  ['Special right triangle', '45°-45°-90°',
+    '<polygon points="24,70 84,70 24,10"/><rect x="24" y="62" width="8" height="8" class="thin"/><text x="10" y="44">s</text><text x="50" y="86">s</text><text x="58" y="38">s√2</text><text x="26" y="40" class="small">45°</text><text x="54" y="67" class="small">45°</text>'],
+  ['Rectangular prism', 'V = ℓwh',
+    '<polygon points="18,34 78,34 78,74 18,74"/><polyline points="18,34 38,18 98,18 78,34"/><polyline points="98,18 98,58 78,74"/><text x="44" y="88">ℓ</text><text x="92" y="74">w</text><text x="6" y="58">h</text>'],
+  ['Cylinder', 'V = πr²h',
+    '<ellipse cx="60" cy="20" rx="30" ry="9"/><line x1="30" y1="20" x2="30" y2="70"/><line x1="90" y1="20" x2="90" y2="70"/><path d="M30,70 A30,9 0 0,0 90,70"/><path d="M30,70 A30,9 0 0,1 90,70" class="dash"/><line x1="60" y1="20" x2="90" y2="20" class="thin"/><text x="93" y="17">r</text><text x="96" y="48">h</text>'],
+  ['Sphere', 'V = 4⁄3 πr³',
+    '<circle cx="60" cy="44" r="32"/><ellipse cx="60" cy="44" rx="32" ry="9" class="dash"/><line x1="60" y1="44" x2="82" y2="22" class="thin"/><text x="63" y="31">r</text>'],
+  ['Cone', 'V = 1⁄3 πr²h',
+    '<path d="M30,68 L60,12 L90,68"/><ellipse cx="60" cy="68" rx="30" ry="8"/><line x1="60" y1="12" x2="60" y2="68" class="dash"/><line x1="60" y1="68" x2="90" y2="68" class="thin"/><text x="72" y="86">r</text><text x="64" y="44">h</text>'],
+  ['Rectangular pyramid', 'V = 1⁄3 ℓwh',
+    '<polyline points="20,70 80,70 100,54"/><polyline points="20,70 40,54 100,54" class="dash"/><line x1="60" y1="10" x2="20" y2="70"/><line x1="60" y1="10" x2="80" y2="70"/><line x1="60" y1="10" x2="100" y2="54"/><line x1="60" y1="10" x2="40" y2="54" class="dash"/><line x1="60" y1="10" x2="60" y2="62" class="dash"/><text x="46" y="86">ℓ</text><text x="94" y="72">w</text><text x="51" y="44">h</text>'],
+];
+
+function referenceSheet(onClose) {
+  const panel = el('aside.refsheet', { role: 'dialog', 'aria-label': 'Math reference sheet' },
+    el('div.refhead',
+      el('strong', '📐 Reference'),
+      el('div.spacer', { style: { flex: 1 } }),
+      el('button.btn.ghost.sm', { onclick: onClose, title: 'Close' }, '✕')));
+  const grid = el('div.refgrid');
+  for (const [name, formula, shapes] of REF_FIGURES) {
+    const cell = el('div.refcell');
+    // Static markup from the table above, never anything the user typed.
+    cell.innerHTML = `<svg viewBox="0 0 120 92" aria-hidden="true">${shapes}</svg>`
+      + `<div class="refname">${name}</div><div class="refformula">${formula}</div>`;
+    grid.append(cell);
+  }
+  panel.append(grid,
+    el('ul.reffacts',
+      el('li', 'The number of degrees of arc in a circle is 360.'),
+      el('li', 'The number of radians of arc in a circle is 2π.'),
+      el('li', 'The sum of the measures in degrees of the angles of a triangle is 180.')));
+  return panel;
 }
 
 function openDesmos() {
@@ -1618,6 +1888,7 @@ function trendChart(points) {
 
 /* ======================================================================= */
 const VIEWS = { plan: viewPlan, calendar: viewCalendar, test: viewTest, drill: viewDrill,
+                check: viewCheck,
                 log: viewLog, history: viewHistory, dashboard: viewDashboard,
                 setup: viewSetupHub, import: viewSetup, profile: viewProfileSetup,
                 migrate: viewMigrate };
@@ -1737,6 +2008,44 @@ async function viewSetupHub() {
           + 'meant to train out of you. Escape brings them back without ending '
           + 'the sitting.'),
         btn);
+    })(),
+
+    /* Question types. Every practice test is built type by type, and a bank
+       imported by an older version has none recorded. This shows the state and
+       re-reads them from the PDFs on demand; importing does it by itself. */
+    (() => {
+      const card = el('div.card');
+      const paint = (info, note) => {
+        const known = (info.total || 0) - (info.blank || 0);
+        const all = info.total && !info.blank;
+        fill(card,
+          el('div.row', el('h2', '🏷 Question types'),
+            el('span.pill' + (all ? '.green' : '.orange'),
+              all ? 'all recorded' : `${(info.blank || 0).toLocaleString()} missing`)),
+          el('p.sub', `${known.toLocaleString()} of ${(info.total || 0).toLocaleString()} questions know their type `
+            + '(Words in Context, Boundaries, Linear functions...). Practice tests use them to put four '
+            + 'vocabulary questions first, one Cross-Text Connections, and every other type in Bluebook order.'),
+          note ? el('p', { style: { marginTop: '8px', color: 'var(--green)', fontSize: '13px' } }, note) : null,
+          !all && !(info.pdfs || []).length
+            ? el('p.faint', { style: { marginTop: '8px' } },
+                'The PDFs they came from are not in the pdfs folder. Import them again and the types are read automatically.')
+            : null,
+          !all && (info.pdfs || []).length
+            ? el('button.btn.lg', { style: { marginTop: '12px' }, onclick: async (e) => {
+                e.target.disabled = true;
+                e.target.textContent = 'Reading your PDFs...';
+                const r = await api('skills/recover', { body: {} });
+                const next = await api('skills');
+                paint(next || info, r && !r.error
+                  ? `Filled in ${(r.filled || 0).toLocaleString()} question types`
+                    + (r.domainsCorrected ? `, and corrected ${plural(r.domainsCorrected, 'question')} the importer had filed under the wrong domain.` : '.')
+                  : (r?.error || 'Could not read the PDFs.'));
+              } }, `Read question types from ${plural(info.pdfs.length, 'PDF')}`)
+            : null);
+      };
+      card.append(el('div.spin'));
+      api('skills', { quiet: true }).then((info) => (info ? paint(info) : card.remove()));
+      return card;
     })(),
 
     el('div.card',

@@ -403,6 +403,28 @@ CREATE TABLE IF NOT EXISTS plan_progress (
     PRIMARY KEY (day_key, task_key)
 );
 
+-- Numbered practice tests: Practice Test 1, 2, 3, assembled once from the
+-- bank and then fixed, so Test 1 is the same test every time you open it.
+-- Every test stores its Module 1 AND both Module 2 forms, because which one
+-- you get depends on how Module 1 goes, exactly as on Bluebook.
+-- It lives here, not in questions.db, because it is the user's state: it has to
+-- survive a re-import of the bank and travel with Move My Data.
+CREATE TABLE IF NOT EXISTS practice_tests (
+    test_number     INTEGER NOT NULL,
+    section         TEXT NOT NULL,
+    module_key      TEXT NOT NULL,          -- 'm1' | 'm2-easy' | 'm2-hard'
+    position        INTEGER NOT NULL,
+    question_id     TEXT NOT NULL,
+    PRIMARY KEY (test_number, section, module_key, position)
+);
+CREATE TABLE IF NOT EXISTS practice_test_meta (
+    test_number     INTEGER PRIMARY KEY,
+    built_at        TEXT NOT NULL DEFAULT (datetime('now','localtime')),
+    skill_gaps      INTEGER NOT NULL DEFAULT 0,
+    difficulty_drift INTEGER NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS idx_practice_question ON practice_tests(question_id);
+
 CREATE INDEX IF NOT EXISTS idx_redo_due       ON redo_queue(due_on, completed_at);
 CREATE INDEX IF NOT EXISTS idx_redo_question  ON redo_queue(question_id);
 CREATE INDEX IF NOT EXISTS idx_targets_active ON drill_targets(retired_on);

@@ -196,6 +196,52 @@ BLUEPRINT = {
             "Standard English Conventions",
             "Expression of Ideas",
         ],
+        # Questions per module per SKILL, inside each domain.
+        #
+        # A domain quota alone is not the real test. "Craft and Structure: 7"
+        # was satisfied just as happily by seven Words in Context questions as
+        # by the mix Bluebook actually gives you, and a module with no Cross-Text
+        # Connections in it is missing a question type you will certainly meet.
+        # These counts are the typical shape of an official Bluebook module; each
+        # domain's numbers add up to its quota above.
+        "skill_quota": {
+            "Craft and Structure": {
+                "Words in Context": 4,
+                "Text Structure and Purpose": 2,
+                "Cross-Text Connections": 1,
+            },
+            "Information and Ideas": {
+                "Central Ideas and Details": 2,
+                "Command of Evidence": 3,        # textual and quantitative together
+                "Inferences": 2,
+            },
+            "Standard English Conventions": {
+                "Boundaries": 4,
+                "Form, Structure, and Sense": 3,
+            },
+            "Expression of Ideas": {
+                "Transitions": 3,
+                "Rhetorical Synthesis": 3,
+            },
+        },
+        # The order Bluebook puts them in. Vocabulary first, Rhetorical Synthesis
+        # ("a student has taken the following notes") last. Skills listed in the
+        # same block are one group on the real test, mixed together and ordered
+        # easiest to hardest as a unit: that is how the conventions questions
+        # appear, punctuation and verb form interleaved.
+        "skill_order": [
+            ["Words in Context"],
+            ["Text Structure and Purpose"],
+            ["Cross-Text Connections"],
+            ["Central Ideas and Details"],
+            ["Command of Evidence"],
+            ["Inferences"],
+            ["Boundaries", "Form, Structure, and Sense"],
+            ["Transitions"],
+            ["Rhetorical Synthesis"],
+        ],
+        # Group by skill in the order above, easiest to hardest inside each.
+        "order": "skill",
         "grid_ins_last": False,
     },
     SECTION_MATH: {
@@ -214,8 +260,18 @@ BLUEPRINT = {
             "Problem-Solving and Data Analysis",
             "Geometry and Trigonometry",
         ],
-        # Student-produced response (grid-in) questions come last in a real module.
-        "grid_ins_last": True,
+        # No fixed per-skill counts for Math: the real test's mix of skills
+        # inside a domain varies far more from form to form than R&W's does.
+        # Each domain's quota is spread evenly over whichever of its skills your
+        # bank actually holds, so a module gets breadth instead of seven
+        # "Linear functions" questions in a row.
+        "skill_quota": None,
+        # Bluebook Math is not grouped by topic. All four domains are mixed and
+        # the module runs from easiest to hardest.
+        "order": "difficulty",
+        # Grid-ins (student-produced responses) came last on the PAPER SAT. The
+        # digital test mixes them in, placed by difficulty like everything else.
+        "grid_ins_last": False,
     },
 }
 

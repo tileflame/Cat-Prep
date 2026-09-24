@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import math
 import random
+import re
 from dataclasses import dataclass, field
 
 import question_repo
@@ -59,6 +60,9 @@ class ModulePlan:
     domain_gaps: dict = field(default_factory=dict)
     difficulty_actual: dict = field(default_factory=dict)
     difficulty_target: dict = field(default_factory=dict)
+    # "domain / skill" -> how many that skill was short and had to be filled
+    # from a neighbouring skill in the same domain.
+    skill_gaps: dict = field(default_factory=dict)
 
     @property
     def size(self) -> int:
@@ -249,38 +253,95 @@ def build_module(
     difficulty_targets = _difficulty_targets(total, tier)
     per_domain = _split_targets_across_domains(domain_quota, difficulty_targets)
 
-    # One pooled fetch per domain, split by difficulty and ordered by freshness.
-    pools: dict[str, dict[str, list[Question]]] = {}
-    for domain in domain_quota:
-        raw = question_repo.fetch_pool_by_difficulty(
-            section=section, domain=domain, exclude_ids=used, rng=randomizer
-        )
-        pools[domain] = {
-            difficulty: question_repo.prioritise_unseen(items, freshness, randomizer)
-            for difficulty, items in raw.items()
-        }
-
     selected: list[Question] = []
     gaps: dict[str, int] = {}
+    skill_gaps: dict[str, int] = {}
 
-    # --- Pass 1 + 2: fill each domain, borrowing across difficulty if needed.
+    # --- Per domain: split its difficulty counts across its SKILLS, then fill.
+    #
+    # A domain quota on its own let a module be seven Words in Context questions
+    # and still call itself Craft and Structure. So each domain's counts are
+    # split a second time, across skills, with the same two-margin method that
+    # splits difficulty across domains: every skill gets exactly its quota and
+    # the domain's difficulty mix still comes out exact.
     for domain, quota in domain_quota.items():
+        raw = question_repo.fetch(section=section, domain=domain,
+                                  exclude_ids=used, shuffle=True, rng=randomizer)
+        raw = question_repo.prioritise_unseen(raw, freshness, randomizer)
+
+        # skill key -> difficulty -> freshest-first pool
+        cells: dict[str, dict[str, list[Question]]] = {}
+        names: dict[str, str] = {}
+        # Display names come from the blueprint first. A skill the bank has
+        # none of never turns up in the fetch, and its gap would otherwise be
+        # reported under the internal key: "crosstextconnections".
+        for name in ((blueprint.get("skill_quota") or {}).get(domain) or {}):
+            names[skill_key(name)] = name
+        for question in raw:
+            key = skill_key(question.skill)
+            names.setdefault(key, question.skill)
+            cells.setdefault(key, {d: [] for d in DIFFICULTY_ORDER}) \
+                 .setdefault(question.difficulty, []).append(question)
+
+        wanted_skills = _skill_quota_for(blueprint, domain, quota, cells, randomizer)
+        per_skill = _split_targets_across_domains(wanted_skills, per_domain.get(domain, {})) \
+            if wanted_skills else {}
+
         domain_picked: list[Question] = []
-        for difficulty in DIFFICULTY_ORDER:
-            want = per_domain.get(domain, {}).get(difficulty, 0)
-            if want <= 0:
-                continue
-            got = _take(pools[domain].get(difficulty, []), want, used)
+        taken: dict[str, int] = {key: 0 for key in wanted_skills}
+
+        def fill(key: str, difficulty: str, n: int) -> int:
+            got = _take(cells.get(key, {}).get(difficulty, []), n, used)
             domain_picked.extend(got)
-            missing = want - len(got)
-            if missing > 0:
-                # Borrow from the nearest difficulties in the same domain.
-                for neighbour in _neighbours(difficulty):
+            taken[key] = taken.get(key, 0) + len(got)
+            return len(got)
+
+        # Pass A, every skill at its exact difficulty FIRST. Borrowing before
+        # every skill has had its exact picks lets an early skill take a
+        # question a later one needed, and costs fidelity for nothing.
+        short: dict[tuple[str, str], int] = {}
+        for key, by_difficulty in per_skill.items():
+            for difficulty in DIFFICULTY_ORDER:
+                want = by_difficulty.get(difficulty, 0)
+                if want > 0:
+                    missing = want - fill(key, difficulty, want)
+                    if missing > 0:
+                        short[(key, difficulty)] = missing
+
+        # Pass B, same skill, nearest difficulty. Keeps the question type right
+        # and gives a little on difficulty, which is the cheaper thing to lose.
+        for (key, difficulty), missing in list(short.items()):
+            for neighbour in _neighbours(difficulty):
+                if missing <= 0:
+                    break
+                missing -= fill(key, neighbour, missing)
+            short[(key, difficulty)] = missing
+
+        # Pass C, same difficulty, another skill in the same domain. The skill
+        # is what gets lost now, so it is recorded as a skill gap. Only for a
+        # NAMED skill: a blank one means the bank never recorded skills, and
+        # running short there is a difficulty shortage, not a missing type.
+        for (key, difficulty), missing in list(short.items()):
+            if missing <= 0:
+                continue
+            if key:
+                skill_gaps[f"{domain} / {names.get(key, key)}"] = \
+                    skill_gaps.get(f"{domain} / {names.get(key, key)}", 0) + missing
+            for other in cells:
+                if missing <= 0:
+                    break
+                if other != key:
+                    missing -= fill(other, difficulty, missing)
+            short[(key, difficulty)] = missing
+
+        # Pass D, anything left in this domain, nearest difficulty first.
+        for (key, difficulty), missing in short.items():
+            for neighbour in [difficulty] + _neighbours(difficulty):
+                for other in cells:
                     if missing <= 0:
                         break
-                    borrowed = _take(pools[domain].get(neighbour, []), missing, used)
-                    domain_picked.extend(borrowed)
-                    missing -= len(borrowed)
+                    missing -= fill(other, neighbour, missing)
+
         shortfall = quota - len(domain_picked)
         if shortfall > 0:
             gaps[domain] = shortfall
@@ -315,13 +376,64 @@ def build_module(
         domain_gaps=gaps,
         difficulty_actual=_count_by_difficulty(ordered),
         difficulty_target=difficulty_targets,
+        skill_gaps=skill_gaps,
     )
 
     if DEBUG:
         print(f"[blueprint] {section} M{module_number} ({tier}): "
               f"{plan.size}/{plan.target_count} "
-              f"diff={plan.difficulty_actual} target={plan.difficulty_target} gaps={gaps}")
+              f"diff={plan.difficulty_actual} target={plan.difficulty_target} "
+              f"gaps={gaps} skill_gaps={skill_gaps}")
     return plan
+
+
+def skill_key(name: str) -> str:
+    """
+    A skill name reduced to letters and digits, for matching.
+
+    The skill label comes out of the PDF text, so "Form, Structure, and Sense"
+    and "Form, Structure and Sense" and "Cross-text Connections" all have to
+    land on the same quota. Case, punctuation and spacing are the parts that
+    drift between exports; the words are not.
+    """
+    return re.sub(r"[^a-z0-9]", "", (name or "").lower())
+
+
+def _skill_quota_for(blueprint: dict, domain: str, quota: int,
+                     cells: dict, rng: random.Random) -> dict[str, int]:
+    """
+    How many of this domain's questions each skill gets, keyed by skill_key.
+
+    Where the blueprint names counts (Reading and Writing), those are used,
+    rescaled if the module is not full size. Where it does not (Math), the
+    domain's quota is spread evenly over whichever skills the bank actually
+    holds, with the odd one out chosen at random so consecutive tests lean on
+    different skills instead of always the same first few.
+    """
+    if quota <= 0:
+        return {}
+    present = [key for key, by_difficulty in cells.items()
+               if any(by_difficulty.values())]
+    explicit = ((blueprint.get("skill_quota") or {}).get(domain) or {})
+    if explicit:
+        counts = {skill_key(name): n for name, n in explicit.items() if n > 0}
+        # Only hold the bank to named skills if it actually records skills for
+        # this domain. A bank imported before skills were read has every skill
+        # blank, and demanding four "Words in Context" from it produced 27
+        # skill gaps per module and not a single practice test. With no skill
+        # labels at all, the domain falls back to difficulty alone below.
+        if set(present) & set(counts):
+            if sum(counts.values()) != quota:
+                counts = _rescale_quota(counts, quota)
+            return counts
+
+    if not present:
+        return {}
+    rng.shuffle(present)
+    base, extra = divmod(quota, len(present))
+    return {key: base + (1 if index < extra else 0)
+            for index, key in enumerate(present)
+            if base + (1 if index < extra else 0) > 0}
 
 
 def _rescale_quota(quota: dict[str, int], total: int) -> dict[str, int]:
@@ -359,19 +471,56 @@ _DIFFICULTY_RANK = {"Easy": 0, "Medium": 1, "Hard": 2}
 def _order_module(questions: list[Question], blueprint: dict,
                   rng: random.Random) -> list[Question]:
     """
-    Present questions the way the real test does: grouped by domain in the
-    published order, and easiest to hardest inside each group. Math grid-ins
-    move to the end of the module, as they do in Bluebook.
-    """
-    domain_order = blueprint.get("domain_order") or []
-    rank = {domain: index for index, domain in enumerate(domain_order)}
+    Present questions the way Bluebook does.
 
-    def sort_key(question: Question):
-        return (
-            rank.get(question.domain, len(rank)),          # domain grouping
-            _DIFFICULTY_RANK.get(question.difficulty, 1),  # easy -> hard
-            rng.random(),                                   # stable-ish shuffle
-        )
+    Reading and Writing ("order": "skill") is grouped by question type in the
+    published sequence, vocabulary first and Rhetorical Synthesis last, easiest
+    to hardest inside each group. Math ("order": "difficulty") is not grouped at
+    all: every domain is mixed and the module simply gets harder as it goes.
+
+    Anything else falls back to grouping by domain, which is what every module
+    got before skills were in the blueprint.
+    """
+    mode = blueprint.get("order") or "domain"
+    domain_order = blueprint.get("domain_order") or []
+    domain_rank = {domain: index for index, domain in enumerate(domain_order)}
+
+    if mode == "skill":
+        blocks = blueprint.get("skill_order") or []
+        skill_rank = {skill_key(name): index
+                      for index, block in enumerate(blocks) for name in block}
+        # A skill the blueprint has never heard of still belongs to a domain,
+        # so it goes straight after that domain's last known group rather than
+        # being dumped at the very end of the module.
+        domain_of = {skill_key(name): domain
+                     for domain, skills in (blueprint.get("skill_quota") or {}).items()
+                     for name in skills}
+        last_block_of = {}
+        for key, index in skill_rank.items():
+            domain = domain_of.get(key)
+            if domain is not None:
+                last_block_of[domain] = max(last_block_of.get(domain, -1), index)
+
+        def group(question: Question) -> float:
+            key = skill_key(question.skill)
+            if key in skill_rank:
+                return float(skill_rank[key])
+            if question.domain in last_block_of:
+                return last_block_of[question.domain] + 0.5
+            return float(len(blocks) + domain_rank.get(question.domain, len(domain_rank)))
+
+        def sort_key(question: Question):
+            return (group(question),
+                    _DIFFICULTY_RANK.get(question.difficulty, 1),
+                    rng.random())
+    elif mode == "difficulty":
+        def sort_key(question: Question):
+            return (_DIFFICULTY_RANK.get(question.difficulty, 1), rng.random())
+    else:
+        def sort_key(question: Question):
+            return (domain_rank.get(question.domain, len(domain_rank)),
+                    _DIFFICULTY_RANK.get(question.difficulty, 1),
+                    rng.random())
 
     ordered = sorted(questions, key=sort_key)
 

@@ -1,5 +1,6 @@
 """Headless tests for the non-UI layers. Run: python3 dev_tests/test_engine.py"""
-import os, random, sqlite3, sys, traceback
+import os, random, shutil, sqlite3, sys, traceback
+from collections import Counter
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 APP = os.path.dirname(HERE)          # dev_tests/ lives inside the app folder
@@ -149,14 +150,37 @@ mcounts = Counter(q.domain for q in ae.build_module("Math", 1, "baseline", rng=r
 mexpected = config.BLUEPRINT["Math"]["domain_quota"]
 check("Math M1 matches the domain quota exactly", dict(mcounts) == mexpected,
       f"{dict(mcounts)} vs {mexpected}")
-# easiest -> hardest inside each domain group
+# Bluebook groups R&W by SKILL, not just domain: vocabulary first, Rhetorical
+# Synthesis last, and easiest to hardest inside each skill group. Inside a
+# domain the difficulty therefore resets at every skill boundary, which is why
+# this used to be asserted per domain and no longer can be.
 rank = {"Easy": 0, "Medium": 1, "Hard": 2}
+blocks = config.BLUEPRINT["Reading and Writing"]["skill_order"]
+block_of = {ae.skill_key(name): i for i, block in enumerate(blocks) for name in block}
+groups = [block_of.get(ae.skill_key(q.skill), 99) for q in m1.questions]
+check("RW M1 skill groups in Bluebook order", groups == sorted(groups),
+      str([q.skill for q in m1.questions]))
+check("RW M1 opens with Words in Context",
+      ae.skill_key(m1.questions[0].skill) == ae.skill_key("Words in Context"),
+      m1.questions[0].skill)
+check("RW M1 closes with Rhetorical Synthesis",
+      ae.skill_key(m1.questions[-1].skill) == ae.skill_key("Rhetorical Synthesis"),
+      m1.questions[-1].skill)
 ok = True
-for d in order:
-    seq = [rank[q.difficulty] for q in m1.questions if q.domain == d]
+for g in set(groups):
+    seq = [rank[q.difficulty] for q, gg in zip(m1.questions, groups) if gg == g]
     if seq != sorted(seq):
         ok = False
-check("RW M1 easy->hard inside each domain", ok)
+check("RW M1 easy->hard inside each skill group", ok)
+# Each named skill gets exactly its count, so vocabulary and Cross-Text
+# Connections are counted separately even though both are Craft and Structure.
+skill_counts = Counter(ae.skill_key(q.skill) for q in m1.questions)
+wanted = {ae.skill_key(s): n
+          for per in config.BLUEPRINT["Reading and Writing"]["skill_quota"].values()
+          for s, n in per.items()}
+check("RW M1 matches the skill quota exactly", dict(skill_counts) == wanted,
+      f"{dict(skill_counts)} vs {wanted}")
+check("RW M1 reports no skill gaps on a full bank", not m1.skill_gaps, str(m1.skill_gaps))
 
 m2 = ae.build_module("Reading and Writing", 2, "hard",
                      exclude_ids={q.question_id for q in m1.questions}, rng=rng)
@@ -167,10 +191,16 @@ check("M2 hard tier skews hard", m2.difficulty_actual["Hard"] > m2.difficulty_ac
 
 mm1 = ae.build_module("Math", 1, "baseline", rng=rng)
 check("Math M1 has 22 questions", mm1.size == 22, f"{mm1.size}, gaps={mm1.domain_gaps}")
-oe_positions = [i for i, q in enumerate(mm1.questions) if q.is_open_ended]
-mc_positions = [i for i, q in enumerate(mm1.questions) if not q.is_open_ended]
-check("Math grid-ins come last", (not oe_positions) or (not mc_positions) or min(oe_positions) > max(mc_positions),
-      f"oe={oe_positions} mc={mc_positions}")
+# Bluebook Math is one run from easiest to hardest with all four domains mixed.
+# Grid-ins sat at the end on the PAPER test; on the digital one they are placed
+# by difficulty like everything else.
+mseq = [rank[q.difficulty] for q in mm1.questions]
+check("Math M1 runs easy->hard across the whole module", mseq == sorted(mseq), str(mseq))
+first_half = {q.domain for q in mm1.questions[:11]}
+check("Math M1 mixes domains instead of grouping them", len(first_half) >= 3,
+      str([q.domain for q in mm1.questions]))
+check("Math M1 spreads its skills", len({q.skill for q in mm1.questions}) >= 8,
+      str(Counter(q.skill for q in mm1.questions)))
 check("positions are 1..n", [q.position for q in mm1.questions] == list(range(1, mm1.size + 1)))
 
 # Degradation: a bank too thin to satisfy the blueprint must report, not crash.
@@ -185,6 +215,34 @@ check("thin bank has no duplicates", len({q.question_id for q in thin.questions}
 database.reset_pool()
 os.remove(os.path.join(make_fake_bank.SANDBOX, "database", "questions.db"))
 os.replace(os.path.join(make_fake_bank.SANDBOX, "database", "full.db"), os.path.join(make_fake_bank.SANDBOX, "database", "questions.db"))
+
+# A bank with a whole SKILL missing. Real exports are lopsided, and Cross-Text
+# Connections in particular is the rarest question type in the bank. The module
+# must still come out full, fill the hole from the same domain, keep the domain
+# quota exact, and say which skill it could not supply.
+database.reset_pool()
+_qdb = os.path.join(make_fake_bank.SANDBOX, "database", "questions.db")
+shutil.copy2(_qdb, _qdb + ".bak")
+_c = sqlite3.connect(_qdb)
+_c.execute("DELETE FROM questions WHERE skill = 'Cross-Text Connections'")
+_c.commit(); _c.close()
+database.reset_pool()
+holed = ae.build_module("Reading and Writing", 1, "baseline", rng=random.Random(5))
+check("a missing skill still yields a full module", holed.size == 27, str(holed.size))
+check("the missing skill is reported as a skill gap",
+      any("Cross-Text" in k for k in holed.skill_gaps), str(holed.skill_gaps))
+check("its place is filled from the same domain",
+      Counter(q.domain for q in holed.questions)["Craft and Structure"] == 7,
+      str(Counter(q.domain for q in holed.questions)))
+check("no domain gap when a sibling skill can cover", not holed.domain_gaps, str(holed.domain_gaps))
+database.reset_pool()
+os.replace(_qdb + ".bak", _qdb)
+database.reset_pool()
+
+# Skill labels drift between exports: punctuation, case, an Oxford comma.
+check("skill matching ignores punctuation and case",
+      ae.skill_key("Form, Structure and Sense") == ae.skill_key("form, structure, and sense")
+      and ae.skill_key("Cross-text Connections") == ae.skill_key("Cross-Text Connections"))
 
 # Empty bank must not explode.
 os.replace(os.path.join(make_fake_bank.SANDBOX, "database", "questions.db"), os.path.join(make_fake_bank.SANDBOX, "database", "full.db"))
@@ -427,6 +485,229 @@ check("unknown difficulty normalises to Medium",
 check("section alias normalises", config.normalize_section("reading & writing") == "Reading and Writing")
 check("None correct_answer does not crash check()",
       Question("a", "M", "d", "s", "Easy", None, "", None, False).check("A") is False)
+
+# ------------------------------------------------- 11. NUMBERED PRACTICE TESTS
+print("\n[11] numbered practice tests")
+import practice_tests as pt  # noqa: E402
+import web_api  # noqa: E402
+attempt_repo.clear_history(keep_notes=False)
+pt.delete_all()
+built = pt.build_more()
+check("at least one practice test builds from the sandbox bank", built["built"] >= 1, str(built))
+check("it says why it stopped", bool(built["stoppedBecause"]), str(built))
+tests = pt.list_tests()
+check("the list matches what was built", len(tests) == built["total"], f"{len(tests)} vs {built}")
+t1 = pt.modules_for(1)
+check("test 1 keeps all six forms",
+      len(t1) == 6 and {k[2] for k in t1} == {"baseline", "easy", "hard"}, str(sorted(t1)))
+check("test 1 R&W Module 1 is a full module",
+      len(t1[("Reading and Writing", 1, "baseline")]) == 27)
+check("test 1 Math Module 1 is a full module", len(t1[("Math", 1, "baseline")]) == 22)
+flat = [q.question_id for qs in t1.values() for q in qs]
+check("no question appears twice inside a test", len(flat) == len(set(flat)))
+m1 = t1[("Reading and Writing", 1, "baseline")]
+check("test 1 opens with vocabulary, like Bluebook",
+      ae.skill_key(m1[0].skill) == ae.skill_key("Words in Context"), m1[0].skill)
+check("test 1 R&W closes with Rhetorical Synthesis",
+      ae.skill_key(m1[-1].skill) == ae.skill_key("Rhetorical Synthesis"), m1[-1].skill)
+
+# Stored means stored: building again adds nothing new and changes nothing old.
+before = [q.question_id for q in m1]
+again = pt.build_more()
+check("building again does not rebuild what exists",
+      [q.question_id for q in pt.modules_for(1)[("Reading and Writing", 1, "baseline")]] == before)
+check("building again on an exhausted bank adds nothing", again["built"] == 0, str(again))
+if built["total"] >= 2:
+    a = {q.question_id for qs in pt.modules_for(1).values() for q in qs}
+    b = {q.question_id for qs in pt.modules_for(2).values() for q in qs}
+    check("two numbered tests share no questions", not (a & b), f"{len(a & b)} shared")
+
+# Sit Practice Test 1 through the API, the way the browser does.
+api = web_api.Api()
+
+
+def _answers(plan, right: bool) -> dict:
+    return {str(i): (q.correct_answer if right else "Z") for i, q in enumerate(plan.questions)}
+
+
+step = api.start_practice_test(number=1, sections=["Reading and Writing"])
+check("a numbered test starts", step.get("step") == "module", str(step)[:200])
+served = [q.question_id for q in api.current_plan.questions]
+check("Module 1 is the stored Module 1, in stored order", served == before)
+step = api.submit({"answers": _answers(api.current_plan, True), "elapsed": 60})
+check("acing Module 1 routes to a break", step.get("step") == "break", str(step)[:200])
+step = api.resume()
+hard_ids = [q.question_id for q in t1[("Reading and Writing", 2, "hard")]]
+check("acing Module 1 serves the stored HARD Module 2",
+      [q.question_id for q in api.current_plan.questions] == hard_ids)
+step = api.submit({"answers": _answers(api.current_plan, True), "elapsed": 60})
+check("the sitting completes", step.get("step") == "done", str(step)[:200])
+
+api.start_practice_test(number=1, sections=["Reading and Writing"])
+api.submit({"answers": _answers(api.current_plan, False), "elapsed": 60})
+api.resume()
+easy_ids = [q.question_id for q in t1[("Reading and Writing", 2, "easy")]]
+check("bombing Module 1 serves the stored EASY Module 2",
+      [q.question_id for q in api.current_plan.questions] == easy_ids)
+api.abandon()
+listed = next(t for t in pt.list_tests() if t["number"] == 1)
+check("the list knows Practice Test 1 was taken", len(listed["sittings"]) == 2,
+      str(listed["sittings"]))
+check("and records a best score from the completed one", bool(listed["best"]), str(listed))
+check("and counts the questions already seen", listed["seen"] > 0, str(listed["seen"]))
+check("an unknown test number is refused, not crashed",
+      "error" in api.start_practice_test(number=999))
+
+# ------------------------------------------------------------ 12. CHECK MODE
+print("\n[12] check mode")
+step = api.start_check(section="Reading and Writing", count=5)
+check("check mode starts", step.get("step") == "module" and step.get("mode") == "check",
+      str(step)[:200])
+plan = api.current_plan
+got = api.check_answer(0, plan.questions[0].correct_answer)
+check("a right answer checks as right", got.get("correct") is True, str(got))
+check("the key comes back with it", got.get("correctAnswer") == plan.questions[0].correct_answer)
+check("a wrong answer checks as wrong", api.check_answer(1, "Z").get("correct") is False)
+check("a blank never counts as right", api.check_answer(2, "").get("correct") is False)
+check("an index off the end is refused", "error" in api.check_answer(99, "A"))
+done = api.submit({"answers": _answers(plan, True), "elapsed": 30})
+check("check mode submits like a drill", done.get("step") == "done", str(done)[:200])
+check("and is filed under its own name",
+      attempt_repo.list_sessions(limit=1)[0]["label"].startswith("Check mode"),
+      attempt_repo.list_sessions(limit=1)[0]["label"])
+api.start_practice_test(number=1)
+check("a TEST will not give its answers away one at a time",
+      "error" in api.check_answer(0, "A"), str(api.check_answer(0, "A")))
+api.abandon()
+pt.delete_all()
+attempt_repo.clear_history(keep_notes=False)
+
+# ----------------------------------------------------- 13. SKILL RECOVERY
+# These headers are copied from a real College Board export, including the two
+# ways a wrapped table cell comes out of a PDF. The importer read every one of
+# them as a blank skill.
+print("\n[13] reading question types out of the PDF header")
+import skill_tags  # noqa: E402
+H = skill_tags.skill_from_header
+check("a plain header",
+      H(" Assessment Test Domain Skill Difficulty SAT Reading and Writing Information and Ideas Inferences Hard",
+        "Information and Ideas", "Reading and Writing") == "Inferences")
+check("a wrapped skill, continuation after the difficulty",
+      H(" Assessment Test Domain Skill Difficulty SAT Reading and Writing Craft and Structure Text Structure and Hard Purpose",
+        "Craft and Structure", "Reading and Writing") == "Text Structure and Purpose")
+check("a wrapped skill, continuation before the difficulty (PyMuPDF order)",
+      H(" Assessment Test Domain Skill Difficulty SAT Reading and Writing Craft and Structure Text Structure and Purpose Hard",
+        "Craft and Structure", "Reading and Writing") == "Text Structure and Purpose")
+check("a wrapped domain AND a wrapped skill",
+      H(" Assessment Test Domain Skill Difficulty SAT Reading and Writing Standard English Form, Structure, and Easy Conventions Sense",
+        "Standard English Conventions", "Reading and Writing") == "Form, Structure, and Sense")
+check("the domain's own words are not mistaken for the skill's",
+      H(" Assessment Test Domain Skill Difficulty SAT Reading and Writing Craft and Structure Words in Context Easy",
+        "Craft and Structure", "Reading and Writing") == "Words in Context")
+check("the longest matching official name wins",
+      H(" Assessment Test Domain Skill Difficulty SAT Math Algebra Systems of two linear equations in two variables Medium",
+        "Algebra", "Math") == "Systems of two linear equations in two variables")
+check("a long Math name split across lines",
+      H(" Assessment Test Domain Skill Difficulty SAT Math Problem-Solving and One-variable data: Distributions Hard Data Analysis and measures of center and spread",
+        "Problem-Solving and Data Analysis", "Math")
+      == "One-variable data: Distributions and measures of center and spread")
+check("capitalisation drift is still recognised",
+      H(" Assessment Test Domain Skill Difficulty SAT Reading and Writing Craft and Structure Cross-text Connections Medium",
+        "Craft and Structure", "Reading and Writing") == "Cross-Text Connections")
+check("a question the importer misfiled is put back in its real domain",
+      skill_tags.classify(
+          " Assessment Test Domain Skill Difficulty SAT Math Problem-Solving and Percentages Medium Data Analysis",
+          "Algebra", "Math") == ("Problem-Solving and Data Analysis", "Percentages"))
+check("headers are found in page text",
+      skill_tags.headers_in_text("Question ID: 8a714fa1\nAssessment\nTest\nDomain\nSkill\nDifficulty\nSAT\nMath\n"
+                                 "Algebra\nLinear functions\nEasy\nQuestion\nA line in the xy-plane...")
+      == [("8a714fa1", " Assessment Test Domain Skill Difficulty SAT Math Algebra Linear functions Easy")])
+check("blank, General and Unclassified all count as unknown",
+      skill_tags.is_blank("") and skill_tags.is_blank("General") and skill_tags.is_blank(None)
+      and not skill_tags.is_blank("Transitions"))
+
+# The same thing end to end through PyMuPDF, the reader the app ships with.
+# Skipped where PyMuPDF is not installed; CI installs it on all three systems.
+try:
+    import fitz  # noqa: F401
+except ImportError:
+    fitz = None
+if fitz is None:
+    print("  --  PyMuPDF not installed here, skipping the PDF round trip")
+else:
+    _db = os.path.join(make_fake_bank.SANDBOX, "database", "questions.db")
+    shutil.copy2(_db, _db + ".bak")
+    rows = [("a1b2c3d4", "Reading and Writing", "Craft and Structure", "Text Structure and", "Purpose", "Hard"),
+            ("0f0f0f0f", "Math", "Algebra", "Linear functions", "", "Easy"),
+            ("8a714fa1", "Math", "Problem-Solving and", "Percentages", "Data Analysis", "Medium")]
+    _c = sqlite3.connect(_db)
+    for qid, sec, dom, *_ in rows:
+        stored_domain = "Algebra" if qid == "8a714fa1" else ("Craft and Structure" if sec != "Math" else "Algebra")
+        _c.execute("INSERT OR REPLACE INTO questions (question_id, section, domain, skill, "
+                   "difficulty, question_img, correct_answer, rationale, is_open_ended) "
+                   "VALUES (?,?,?,?,?,?,?,?,?)",
+                   (qid, sec, stored_domain, "", rows[[r[0] for r in rows].index(qid)][5],
+                    "images/none.png", "A", "none", 0))
+    _c.commit(); _c.close()
+    pdf_path = os.path.join(make_fake_bank.SANDBOX, "export-test.pdf")
+    doc = fitz.open()
+    # One insert per printed row, top to bottom, so the text order PyMuPDF
+    # reports cannot depend on how it groups separate words on a line. The
+    # wrapped second line of a cell is its own row, as on the real export.
+    for qid, sec, dom, skill1, cont, diff in rows:
+        page = doc.new_page()
+        page.insert_text((40, 60), f"Question ID: {qid}", fontsize=11)
+        page.insert_text((40, 90), "Assessment Test Domain Skill Difficulty", fontsize=9)
+        page.insert_text((40, 108), f"SAT {sec} {dom} {skill1} {diff}", fontsize=9)
+        if cont:
+            page.insert_text((40, 120), cont, fontsize=9)
+        page.insert_text((40, 150), "Question", fontsize=11)
+        page.insert_text((40, 175), "Passage text about text, structure and purpose.", fontsize=10)
+    doc.save(pdf_path); doc.close()
+    database.reset_pool()
+    import pathlib
+    got = skill_tags.recover(pdfs=[pathlib.Path(pdf_path)])
+    _c = sqlite3.connect(_db)
+    after = {r[0]: (r[1], r[2]) for r in _c.execute(
+        "SELECT question_id, domain, skill FROM questions WHERE question_id IN ('a1b2c3d4','0f0f0f0f','8a714fa1')")}
+    _c.close()
+    check("PyMuPDF round trip fills the blanks", got.get("filled", 0) >= 3, str(got))
+    check("a wrapped skill read through PyMuPDF",
+          after.get("a1b2c3d4", ("", ""))[1] == "Text Structure and Purpose", str(after))
+    check("a plain Math skill read through PyMuPDF",
+          after.get("0f0f0f0f", ("", ""))[1] == "Linear functions", str(after))
+    check("the misfiled question is moved to its real domain",
+          after.get("8a714fa1") == ("Problem-Solving and Data Analysis", "Percentages"), str(after))
+    again = skill_tags.recover(pdfs=[pathlib.Path(pdf_path)])
+    check("a skill already recorded is never overwritten", again.get("filled", 1) == 0, str(again))
+    database.reset_pool()
+    os.replace(_db + ".bak", _db)
+    os.remove(pdf_path)
+    database.reset_pool()
+
+# ------------------------------------------ 14. A BANK WITH NO SKILLS AT ALL
+# Exactly the state of a bank imported before any of this, on a machine whose
+# PDFs have been deleted. It must still get practice tests, shaped by domain and
+# difficulty, not zero tests and a wall of "skill gaps".
+print("\n[14] a bank with every skill blank")
+_db = os.path.join(make_fake_bank.SANDBOX, "database", "questions.db")
+shutil.copy2(_db, _db + ".bak")
+_c = sqlite3.connect(_db); _c.execute("UPDATE questions SET skill = ''"); _c.commit(); _c.close()
+database.reset_pool()
+blind = ae.build_module("Reading and Writing", 1, "baseline", rng=random.Random(9))
+check("a skill-blind bank still makes a full module", blind.size == 27, str(blind.size))
+check("and reports no skill gaps it cannot know about", not blind.skill_gaps, str(blind.skill_gaps))
+check("the domain quota still holds",
+      dict(Counter(q.domain for q in blind.questions)) == config.BLUEPRINT["Reading and Writing"]["domain_quota"])
+blind_order = [config.BLUEPRINT["Reading and Writing"]["domain_order"].index(q.domain) for q in blind.questions]
+check("and domains stay in Bluebook order", blind_order == sorted(blind_order), str(blind_order))
+pt.delete_all()
+built_blind = pt.build_more()
+check("practice tests still build from a skill-blind bank", built_blind["built"] >= 1, str(built_blind))
+pt.delete_all()
+database.reset_pool()
+os.replace(_db + ".bak", _db)
+database.reset_pool()
 
 print(f"\n{'=' * 60}\nPASSED {len(PASS)}   FAILED {len(FAIL)}")
 if FAIL:

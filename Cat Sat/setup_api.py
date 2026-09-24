@@ -137,7 +137,7 @@ def saved_profile() -> dict:
 
 #: Bumped by hand on each release. Shown in the app so a bug report can say
 #: which build it came from, which is always the first question.
-VERSION = "1.4"
+VERSION = "1.5"
 RELEASES_URL = "https://github.com/tileflame/Cat-Prep/releases"
 
 
@@ -607,6 +607,24 @@ def _run_import_inner(paths: list[Path], force: bool) -> None:
         else:
             manifest.pop(name, None)      # never let a failure be skipped next time
     _save_manifest(manifest)
+
+    # The importer saves every question with a blank skill (its header parser
+    # reads the text between the "Skill" and "Difficulty" LABELS, which is
+    # nothing), and tests are now built by skill. Read the skills out of the
+    # same PDFs while they are still right here, before the student ever opens
+    # the Test tab. Only blanks are filled; nothing already recorded changes.
+    #
+    # Not only when this import added questions: dropping the same PDFs in
+    # again is how somebody with an old blank-skill bank would fix it, and the
+    # importer skips those as already imported. recover() returns at once when
+    # nothing is blank, so running it every time costs nothing.
+    with _lock:
+        _progress.message = "Reading question types"
+    try:
+        import skill_tags
+        skill_tags.recover()
+    except Exception:                                     # noqa: BLE001
+        pass                                              # tests still build without them
 
     failed = [f for f in _progress.files if f["state"] == "error"]
     with _lock:

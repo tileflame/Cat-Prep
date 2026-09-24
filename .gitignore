@@ -93,3 +93,8 @@ build/CatPrep/
 *.spec.bak
 "CatPrep Data"/
 CatPrep Data/
+
+# PyInstaller's working folder. `python -m PyInstaller build/catprep.spec` does
+# its intermediate work in build/<spec name>/, right next to the spec, and that
+# is hundreds of files that must never be committed. dist/ is ignored above.
+build/catprep/

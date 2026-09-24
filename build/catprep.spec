@@ -47,7 +47,7 @@ a = Analysis(
         "sat_importer", "setup_api", "web_api", "server", "database",
         "question_repo", "attempt_repo", "adaptive_engine", "models",
         "config", "diagnostic", "test_flow", "study_plan", "plan_builder",
-        "migration",
+        "migration", "practice_tests", "skill_tags",
         # user_profile, NOT profile. Python's standard library already owns the
         # name `profile`, and a frozen app has one flat namespace where two
         # modules called `profile` are one collision — see user_profile.py.

@@ -336,6 +336,10 @@ class CatSatHandler(BaseHTTPRequestHandler):
                 return self._json(api.review(route.split("/", 1)[1]))
             if route.startswith("note/"):
                 return self._json(api.get_note(route.split("/", 1)[1]))
+            if route == "tests":
+                return self._json(api.practice_tests())
+            if route == "skills":
+                return self._json(api.skill_status())
 
         # --- writes
         if method == "POST":
@@ -357,6 +361,28 @@ class CatSatHandler(BaseHTTPRequestHandler):
                     source=body.get("source", "fresh")))
             if route == "start/redo":
                 return self._json(api.start_redo(_as_int(body.get("limit"), 10, 1, 200)))
+            if route == "tests/build":
+                return self._json(api.build_practice_tests())
+            if route == "skills/recover":
+                return self._json(api.recover_skills())
+            if route == "start/practice":
+                return self._json(api.start_practice_test(
+                    number=_as_int(body.get("number"), 1, 1, 10_000),
+                    sections=body.get("sections") or None,
+                    timed=bool(body.get("timed", True)),
+                    threshold=_as_float(body.get("threshold"), 0.65, 0.05, 0.95),
+                    weighted=bool(body.get("weighted", True))))
+            if route == "start/check":
+                return self._json(api.start_check(
+                    section=body.get("section"),
+                    domains=body.get("domains") or [],
+                    count=_as_int(body.get("count"), 10, 1, 100),
+                    difficulty=body.get("difficulty") or None,
+                    ramp=bool(body.get("ramp", True))))
+            if route == "check":
+                return self._json(api.check_answer(
+                    _as_int(body.get("index"), -1, -1, 10_000),
+                    str(body.get("answer") or "")))
             if route == "start/pool":
                 return self._json(api.start_review_pool(
                     body.get("questionIds") or [],

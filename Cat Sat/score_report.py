@@ -36,12 +36,13 @@ MATH = "Math"
 #:
 #: These are PATTERN DATA, not wording. A pass that rewrote the app's own em
 #: dashes into hyphens reached into these two patterns as well and turned
-#: "[-–—\d]" into "[-–-\d]", which is a character range running from en dash to
-#: \d and is not a legal regex at all. Every score-report import died on import
-#: of this module. Keeping the class in one named constant means it reads as
+#: "hyphen, en dash, em dash, digit" into "hyphen, en dash, hyphen, digit", which
+#: is a character range running from en dash to \d and is not a legal regex at
+#: all. Every score-report import crashed. So the dashes are written below as
+#: escape sequences: there is no literal dash in this file for a sweep to find. Keeping the class in one named constant means it reads as
 #: data, and there is one place to look if it ever happens again.
-DASHES = "[-–—]"
-DASHES_D = "[-–—\\d]"
+DASHES = "[-\u2013\u2014]"
+DASHES_D = "[-\u2013\u2014\\d]"
 
 RW_DOMAINS = [
     "Information and Ideas",
