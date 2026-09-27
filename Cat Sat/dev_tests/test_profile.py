@@ -93,6 +93,41 @@ check("superscore keeps the best of each section, not the best total",
 check("bands come from the most recent report that has them",
       student.latest_domains()["Craft and Structure"] == LOW)
 
+# Banking is judged sitting by sitting. These two are a real pair of reports:
+# Math 760 with every domain top band, then Math 700 with one domain a band
+# lower. The superscore keeps the 760, so Math must STAY banked. The old check
+# took the best score but the latest bands, mixed the two days, and put 30% of
+# every study week back onto a section superscoring had already locked in.
+retaker = Profile()
+retaker.add_report(report("Aug", "2026-08-22", 640, 760, {**ALL_TOP_MATH,
+              "Information and Ideas": MID, "Craft and Structure": LOW,
+              "Expression of Ideas": LOW, "Standard English Conventions": TOP}))
+retaker.add_report(report("Sep", "2026-09-12", 660, 700, {**ALL_TOP_MATH,
+              "Problem-Solving and Data Analysis": MID,
+              "Information and Ideas": MID, "Craft and Structure": LOW,
+              "Expression of Ideas": TOP, "Standard English Conventions": TOP}))
+check("a weaker retake does not un-bank a section the superscore already holds",
+      retaker.banked_sections() == {sr.MATH}, str(retaker.banked_sections()))
+check("and the superscore takes each section's best day", retaker.superscore() == 660 + 760,
+      str(retaker.superscore()))
+import copy  # noqa: E402
+planned = copy.deepcopy(retaker)
+planned.add_test_date(date(2026, 10, 24), "SAT #3")
+first_week = pb.build_weeks(planned, date(2026, 9, 25))[0]
+check("the banked section gets zero plan hours",
+      first_week["math_hours"] == 0.0 and first_week["rw_hours"] > 0, str(first_week))
+
+# And the other direction: no single sitting ever had it all. A 760 with one
+# domain short, then a 740 with every domain top band. Neither day reached the
+# banked level with every domain in the top band, so Math is NOT banked, even
+# though "best score" and "latest bands" taken together would say it was.
+mixed = Profile()
+mixed.add_report(report("A", "2026-08-22", 640, 760, {**ALL_TOP_MATH,
+              "Problem-Solving and Data Analysis": MID}))
+mixed.add_report(report("B", "2026-09-12", 640, 740, ALL_TOP_MATH))
+check("two half-finished sittings do not add up to a banked section",
+      mixed.banked_sections() == set(), str(mixed.banked_sections()))
+
 weak = Profile()
 weak.add_report(report("x", "2026-03-14", 600, 600,
                        {d: MID for d in sr.ALL_DOMAINS}))
@@ -163,6 +198,71 @@ check("every drill names a real domain",
 check("every task carries the fields the UI reads",
       all(all(k in t for k in ("minutes", "label", "detail", "action", "params"))
           for p in plan["days"].values() for t in p["tasks"]))
+
+print("\n[5b] a day that has gone by still has its plan")
+# The live plan is built forward from today, so a missed day used to open as
+# "Outside your planned window" with nothing on it to tick.
+import study_plan as sp                                          # noqa: E402
+import user_profile as _up                                       # noqa: E402
+_today = date.today()
+_yesterday = _today - timedelta(days=1)
+_catch = Profile(name="Catching up", target_total=1500)
+_catch.add_report(report("SAT Sep", (_today - timedelta(days=14)).isoformat(), 640, 720,
+                         {"Information and Ideas": MID, "Craft and Structure": LOW,
+                          "Expression of Ideas": MID, "Standard English Conventions": LOW,
+                          "Algebra": TOP, "Advanced Math": MID,
+                          "Problem-Solving and Data Analysis": MID,
+                          "Geometry and Trigonometry": TOP}))
+_catch.add_test_date(_today - timedelta(days=14), "SAT Sep")
+_catch.add_test_date(_today + timedelta(days=7), "The final showdown")
+_catch.save()
+pb.clear_plan_cache()
+try:
+    _live = pb.active_plan()
+    _today_before = [t["label"] for t in sp.active_day_plan(_today)["tasks"]]
+    check("the live plan starts today, which is why yesterday used to be blank",
+          _yesterday not in _live["days"])
+    _back = sp.active_day_plan(_yesterday)
+    check("yesterday has tasks to tick", len(_back["tasks"]) > 0, _back.get("headline"))
+    check("and is not the outside-the-window placeholder",
+          _back["headline"] != "Outside your planned window", _back["headline"])
+    check("it is a generated day that knows its week",
+          _back.get("source") == "generated" and bool(_back.get("week")), str(_back.get("source")))
+    check("the calendar's week lookup finds it too", sp.active_week_for(_yesterday) is not None)
+    _eve = sp.active_day_plan(_today - timedelta(days=15))
+    check("a past day keeps the shape it had then: the eve of the old test is off",
+          "OFF" in _eve["headline"], _eve["headline"])
+    _dump = sp.active_day_plan(_today - timedelta(days=13))
+    check("and the day after it is the brain dump", "Brain dump" in _dump["headline"],
+          _dump["headline"])
+    _morning = pb.build_plan(student, today=date(2026, 5, 3))["days"].get(date(2026, 5, 3), {})
+    check("the live plan shows the brain dump ON the morning after, not only ahead of it",
+          "Brain dump" in _morning.get("headline", ""), _morning.get("headline"))
+    check("the countdown on that day is to the test that was next then",
+          (sp.active_next_test(_today - timedelta(days=15)) or {}).get("label") == "SAT Sep",
+          str(sp.active_next_test(_today - timedelta(days=15))))
+    check("today's countdown is still to the next real test",
+          (sp.active_next_test(_today) or {}).get("label") == "The final showdown")
+    _old_week = sp.active_week_for(_today - timedelta(days=15))
+    _this_start = pb._week_bounds(_today)[0]
+    check("a past week is numbered back from this week, not called week 0 again",
+          _old_week and _old_week["number"]
+          == (pb._week_bounds(_today - timedelta(days=15))[0] - _this_start).days // 7
+          and _old_week["number"] < 0, str(_old_week and _old_week["number"]))
+    check("the calendar can mark a test already sat",
+          any(t["label"] == "SAT Sep" for t in sp.active_test_dates()))
+    check("looking back leaves today's plan exactly as it was",
+          [t["label"] for t in sp.active_day_plan(_today)["tasks"]] == _today_before)
+    _too_old = sp.active_day_plan(_today - timedelta(days=pb.PAST_DAYS + 1))
+    check("the look-back is bounded", _too_old["tasks"] == [], _too_old["headline"])
+    check("a future day still comes from the live plan",
+          "past" not in sp.active_day_plan(_today + timedelta(days=3)))
+finally:
+    try:
+        _up.PROFILE_PATH.unlink()
+    except OSError:
+        pass
+    pb.clear_plan_cache()
 
 print("\n[6] degenerate inputs don't crash")
 empty = Profile()

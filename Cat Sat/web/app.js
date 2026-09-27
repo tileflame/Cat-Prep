@@ -81,7 +81,7 @@ const API_TIMEOUT_MS = 20000;
 // Routes are 'start/drill', 'setup/import', 'submit', 'review/12' — the old
 // pattern used underscores and an anchor, so it matched almost none of them
 // and every start/* call ran on the short 20s budget.
-const SLOW_CALLS = /(^|\/)(import|submit|start|review|pool)(\/|$)/;
+const SLOW_CALLS = /(^|\/)(import|submit|start|review|pool|build|recover|backup|resume)(\/|$)/;
 
 /* Thrown when the screen a request was loading is no longer the screen you are
    on. Not an error anybody needs to see — go() swallows it silently. */
@@ -280,7 +280,7 @@ function modal(title, bodyNodes, footerNodes) {
 }
 
 /* ------------------------------------------------------------------ state */
-const State = { boot: null, route: 'import', quiz: null, summary: null, day: null,
+const State = { boot: null, route: 'import', quiz: null, onBreak: false, summary: null, day: null,
   /* Review "practice mode": keep the answers covered so a question can be
      re-attempted honestly. Seeing the answer once makes the next attempt
      recognition rather than recall, which is the thing spaced redos exist to
@@ -318,25 +318,34 @@ function renderNav() {
   fill($('#nav'), ...items.map(([key, label]) =>
     el('button', { class: State.route === key ? 'on' : '', onclick: () => go(key) }, label)));
 
+  // Most important first: when the bar is short of room the LAST pills are
+  // the ones that drop out (see #topright in app.css), so the countdown to
+  // your test goes first and the version number goes last.
   const right = [];
+  const paused = State.boot?.paused;
+  if (paused && !State.quiz && !State.onBreak) {
+    right.push(el('span.pill.blue', { onclick: resumePaused, style: { cursor: 'pointer' },
+      title: `Pick up ${paused.label} where you left it` }, `▶ Resume ${paused.label}`));
+  }
+  if (State.boot?.bankOk && State.boot?.daysToTest !== null && State.boot?.nextTest) {
+    const d = State.boot.daysToTest;
+    const text = d === 0 ? `${State.boot.nextTest.label} TODAY` : `${d}d to ${State.boot.nextTest.label}`;
+    right.push(el('span.pill' + (d <= 3 ? '.red' : d <= 7 ? '.orange' : '.green'),
+      { title: text }, text));
+  }
+  if (State.boot?.redos?.due) {
+    right.push(el('span.pill.purple', `${State.boot.redos.due} redos due`));
+  }
+  if (State.boot?.untagged) {
+    right.push(el('span.pill.orange', { onclick: () => go('log'), style: { cursor: 'pointer' } },
+      `${State.boot.untagged} untagged`));
+  }
   if (State.boot?.version) {
     right.push(el('a.pill.faint', {
       href: State.boot.releasesUrl || '#', target: '_blank', rel: 'noopener',
       title: 'Check for a newer version',
       style: { textDecoration: 'none' },
     }, `v${State.boot.version}`));
-  }
-  if (State.boot?.bankOk && State.boot?.daysToTest !== null && State.boot?.nextTest) {
-    const d = State.boot.daysToTest;
-    right.push(el('span.pill' + (d <= 3 ? '.red' : d <= 7 ? '.orange' : '.green'),
-      d === 0 ? `${State.boot.nextTest.label} TODAY` : `${d}d to ${State.boot.nextTest.label}`));
-  }
-  if (State.boot?.untagged) {
-    right.push(el('span.pill.orange', { onclick: () => go('log'), style: { cursor: 'pointer' } },
-      `${State.boot.untagged} untagged`));
-  }
-  if (State.boot?.redos?.due) {
-    right.push(el('span.pill.purple', `${State.boot.redos.due} redos due`));
   }
   fill($('#topright'), ...right);
 }
@@ -346,8 +355,134 @@ async function refreshBoot() {
   // and it is routinely fired alongside a go() call (save-and-exit does exactly
   // that). Letting it be cancelled as stale would leave the nav showing the
   // state from before whatever just happened.
-  State.boot = await api('bootstrap', { quiet: true, nav: false });
+  const next = await api('bootstrap', { quiet: true, nav: false });
+  // A refresh that failed keeps the last good state. Swapping in the error
+  // dropped the Resume button (and the "you have an unfinished sitting"
+  // question) exactly when the app was having trouble.
+  if (next && next.error && State.boot && !State.boot.error) return;
+  State.boot = next;
+  State.bootAt = Date.now();
   renderNav();
+}
+
+/* A tab left open overnight kept yesterday's countdown and redo count until
+   something happened to refresh them. Coming back to it after a while now
+   does. Never during a sitting: nothing up there is visible then anyway. */
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'visible' && !State.quiz && !State.onBreak
+      && Date.now() - (State.bootAt || 0) > 5 * 60 * 1000) refreshBoot();
+});
+
+/* Closing the window, reloading, or the browser going away mid-sitting pauses
+   it, exactly like clicking a tab does. sendBeacon is the one request a page
+   is allowed to send while it is being torn down. */
+window.addEventListener('pagehide', () => {
+  try {
+    const q = State.quiz;
+    const body = q && !q.submitted ? { moduleId: q.moduleId, state: q.state() }
+      : State.onBreak ? {} : null;
+    if (body) navigator.sendBeacon('/api/pause', new Blob([JSON.stringify(body)], { type: 'application/json' }));
+  } catch (e) { /* the page is going away regardless */ }
+});
+
+/* Escape outside a module: close a pop-up, or bring the tabs back on the break
+   screen, which is still in focus mode. The quiz has its own handler. */
+document.addEventListener('keydown', (e) => {
+  if (e.key !== 'Escape' || State.quiz) return;
+  if (overlayEl().childElementCount) overlayEl().replaceChildren();
+  else applyFocus(false);
+});
+
+/* ------------------------------------------------------------ leaving a sitting
+   Leaving a test, a drill or check mode used to END it: a confirm box, then
+   the module you were halfway through was thrown away, and even "Save and
+   exit" on the break screen abandoned the rest of the test. Now leaving
+   pauses it. The answers so far, the question you were on and the clock go
+   to the server, and Resume puts you back exactly there, today or another
+   day, after the app has been closed and reopened. */
+function leaveSitting() {
+  const q = State.quiz;
+  if (q) {
+    State.quiz = null;
+    try { q.stop?.(); } catch (e) { /* already stopped */ }
+    try { q.unbind?.(); } catch (e) { /* already unbound */ }
+    if (!q.submitted) {
+      return api('pause', { body: { moduleId: q.moduleId, state: q.state() }, quiet: true })
+        .then((r) => {
+          toast(r && r.ok ? 'Saved. Pick it up with ▶ Resume whenever you are ready.'
+            : 'Could not reach the app to save this. Your answers up to the last autosave are kept.',
+          !(r && r.ok));
+          return refreshBoot();
+        });
+    }
+    return refreshBoot();
+  }
+  if (State.onBreak) {
+    State.onBreak = false;
+    if (window.__brk) clearInterval(window.__brk);
+    return api('pause', { body: {}, quiet: true }).then((r) => {
+      if (r && r.ok) toast('Saved at the break. Pick it up with ▶ Resume whenever you are ready.');
+      return refreshBoot();
+    });
+  }
+  return null;
+}
+
+/* One sitting request at a time. A double-clicked Start built two quizzes (one
+   hidden, its clock still running) and a double-clicked Continue ended a full
+   test after Module 1. The server now shrugs off repeats as well; this keeps
+   them from being sent. */
+let sittingBusy = false;
+async function sittingCall(path, body) {
+  if (sittingBusy) return null;
+  sittingBusy = true;
+  try { return await api(path, { body: body || {} }); } finally { sittingBusy = false; }
+}
+
+async function resumePaused() {
+  const data = await sittingCall('paused/resume');
+  if (data && data.error) { await refreshBoot(); go(State.route); return; }
+  handleStep(data);
+}
+
+async function discardPaused() {
+  const p = State.boot?.paused;
+  if (!p) return;
+  if (!confirm(`End "${p.label}" for good?\n\nAnything you already handed in stays in History. `
+    + 'The module you were in the middle of is not graded.')) return;
+  await api('paused/discard', { body: {} });
+  await refreshBoot();
+  go(State.route);
+}
+
+/* The Resume card at the top of Plan, Test, Drill and Check Mode. */
+function pausedCard() {
+  const p = State.boot?.paused;
+  if (!p || State.quiz || State.onBreak) return null;
+  const bits = [p.where !== p.label ? p.where : null, p.progress,
+    p.remaining != null ? `${clock(p.remaining)} left on its clock` : null].filter(Boolean);
+  return el('div.card.resume',
+    el('div.row',
+      el('div', { style: { minWidth: 0, flex: '1 1 260px' } },
+        el('h2', `🔖 Unfinished: ${p.label}`),
+        el('p.sub', bits.join(' · ') || 'Right where you left it.')),
+      el('button.btn.primary', { onclick: resumePaused }, '▶ Resume'),
+      el('button.btn.ghost.sm', { onclick: discardPaused }, 'End it')));
+}
+
+/* Starting something new ends the paused sitting, so say so first. */
+function okToStartNew() {
+  const p = State.boot?.paused;
+  if (!p || State.quiz || State.onBreak) return true;
+  return confirm(`You have an unfinished sitting: ${p.label}.\n\nStarting a new one ends it. `
+    + 'Anything you already handed in stays in History.\n\nStart the new one anyway?');
+}
+
+/* An image that is gone from disk says so, instead of a broken-image icon. */
+function safeImg(node, message) {
+  node.addEventListener('error', () => node.replaceWith(el('p.faint', message || 'Image missing.')),
+    { once: true });
+  return node;
 }
 
 /* ---------------------------------------------------------------- focus mode
@@ -388,20 +523,11 @@ function go(route, arg) {
   }
   // Keep selected files and live progress when an empty-bank tab is clicked.
   if (route === 'import' && State.route === 'import' && document.querySelector('.dropzone')) return;
-  if (State.quiz && !['quiz'].includes(route)) {
-    if (!confirm('Leave the sitting in progress? Your answers so far are saved.')) return;
-    // Stop the clock and unbind the keyboard BEFORE dropping the quiz.
-    // Without this the abandoned module's 1-second interval kept running: when
-    // its timer hit zero it called submit() on a sitting the server had
-    // already abandoned, blanked whatever screen you were on, and left a
-    // spinner with nothing behind it — minutes after you walked away from it.
-    // The keydown handler leaked too, so A/B/C/D kept getting swallowed by
-    // every stale sitting you had ever left.
-    try { State.quiz.stop?.(); } catch (e) { /* already stopped */ }
-    try { State.quiz.unbind?.(); } catch (e) { /* already unbound */ }
-    api('abandon', { body: {} });
-    State.quiz = null;
-  }
+  // Leaving a sitting pauses it (see leaveSitting). The clock and the keyboard
+  // are stopped BEFORE the quiz is dropped: a module left running used to hand
+  // itself in when its timer hit zero, minutes after you walked away.
+  // The next screen waits for the pause to land, so it can offer Resume.
+  const leaving = (State.quiz || State.onBreak) ? leaveSitting() : null;
   State.route = route;
   renderNav();
   const view = VIEWS[route];
@@ -423,7 +549,8 @@ function go(route, arg) {
   }, 180);
   // A view that throws used to leave the spinner up with nothing to click.
   // Now it paints something you can act on, and the app stays usable.
-  Promise.resolve(view(arg))
+  Promise.resolve(leaving).catch(() => {})
+    .then(() => (go._nav === mine ? view(arg) : undefined))
     .catch((err) => {
       if (err === STALE || go._nav !== mine) return;   // you already left
       console.error('[view]', route, err);
@@ -486,6 +613,10 @@ function planGapCard(data) {
       'Back to today'));
 }
 
+/* Week 0 is this week. A missed day you go back to can sit in an earlier
+   week, which the server numbers -1, -2 and so on. */
+const weekName = (n) => (n >= 0 ? `Week ${n}` : n === -1 ? 'Last week' : `${-n} weeks ago`);
+
 async function viewPlan(dayIso) {
   const data = await api('plan' + (dayIso ? `?day=${dayIso}` : ''));
   State.day = data.day;
@@ -503,13 +634,19 @@ async function viewPlan(dayIso) {
       el('h1', '📋 ' + relative,
         isToday ? null : el('span.pill.orange', { style: { marginLeft: '10px', verticalAlign: 'middle' } }, 'not today')),
       el('div.sub', new Date(data.day + 'T12:00').toLocaleDateString(undefined,
-        { weekday: 'long', month: 'long', day: 'numeric', year: 'numeric' }))),
+        { weekday: 'long', month: 'long', day: 'numeric', year: 'numeric' })),
+      // A day that has gone by is still worth opening: it is the one you missed.
+      offset < 0 && data.tasks.length
+        ? el('p.faint', { style: { marginTop: '4px', color: 'var(--amber)' } },
+            'Catching up. Tick off whatever you did that day; it still counts toward your streak.')
+        : null),
     el('div.spacer'),
     el('div.row.tight',
       el('button.btn.ghost.sm', { onclick: () => viewPlan(data.prevDay) }, '◄'),
       el('button.btn' + (isToday ? '.on' : '.ghost') + '.sm', { onclick: () => viewPlan(data.today) }, 'Today'),
       el('button.btn.ghost.sm', { onclick: () => viewPlan(data.nextDay) }, '►'),
       el('button.btn.sm', { onclick: () => go('calendar', data.day) }, '🗓 Calendar'))));
+  nodes.push(pausedCard());
 
   const tiles = [];
   if (data.nextTest) {
@@ -518,7 +655,10 @@ async function viewPlan(dayIso) {
       d <= 3 ? 'var(--red)' : d <= 7 ? 'var(--orange)' : 'var(--green)',
       `${data.nextTest.date} · ${data.nextTest.note}`));
   }
-  if (data.week) tiles.push(tile('Week', `${data.week.number} · ${data.week.kind}`, 'var(--blue)', data.week.title));
+  if (data.week) {
+    tiles.push(tile('Week', data.week.number < 0 ? weekName(data.week.number) : `${data.week.number} · ${data.week.kind}`,
+      'var(--blue)', data.week.title));
+  }
   tiles.push(tile('Streak', `${data.streak}d`, data.streak ? 'var(--green)' : 'var(--faint)', 'days with work logged'));
   tiles.push(tile('Redos due', data.redos.due, data.redos.due ? 'var(--orange)' : 'var(--faint)',
     `${data.redos.upcoming} scheduled later`));
@@ -542,7 +682,7 @@ async function viewPlan(dayIso) {
 
   if (data.week) {
     nodes.push(el('div.card',
-      el('div.row', el('h2', `Week ${data.week.number}, ${data.week.title}`),
+      el('div.row', el('h2', `${weekName(data.week.number)}, ${data.week.title}`),
         el('span.pill' + (data.week.kind === 'taper' ? '.orange' : '.green'), data.week.kind.toUpperCase()),
         el('div.spacer', { style: { flex: 1 } }),
         el('span.faint', `${hrs(data.week.hours)}h · Math ${hrs(data.week.mathHours)}h `
@@ -650,18 +790,21 @@ async function viewPlan(dayIso) {
 const MATH_DOMAINS = ['Algebra', 'Advanced Math', 'Problem-Solving and Data Analysis', 'Geometry and Trigonometry'];
 const rwOrMath = (domain) => (MATH_DOMAINS.includes(domain) ? 'Math' : 'Reading and Writing');
 
-function launchTask(task, ctx) {
-  api('plan/task', { body: { day: ctx.day, key: task.key, done: true } });
+async function launchTask(task, ctx) {
+  // Ticked only once the sitting has really started. It used to be ticked
+  // first, so a start that failed still counted toward the streak.
+  const tick = () => api('plan/task', { body: { day: ctx.day, key: task.key, done: true } });
   const p = task.params || {};
+  if (task.action === 'review') { tick(); go('log'); return; }
+  let started = null;
   if (task.action === 'drill') {
-    startDrill({ section: p.section, domains: p.domains || [], count: p.count || 20, difficulty: p.difficulty || null });
+    started = await startDrill({ section: p.section, domains: p.domains || [], count: p.count || 20, difficulty: p.difficulty || null });
   } else if (task.action === 'module') {
-    startTest({ mode: 'section', sections: [p.section], timed: true });
+    started = await startTest({ mode: 'section', sections: [p.section], timed: true });
   } else if (task.action === 'redo') {
-    startRedo(p.count || 10);
-  } else if (task.action === 'review') {
-    go('log');
+    started = await startRedo(p.count || 10);
   }
+  if (started && !started.error) tick();
 }
 
 /* ======================================================================= */
@@ -691,7 +834,7 @@ async function viewCalendar(arg) {
     },
       el('div.calrow',
         el('span.calnum', d.dayOfMonth),
-        d.weekNumber !== null ? el('span.calweek', `W${d.weekNumber}`) : null),
+        d.weekNumber !== null && d.weekNumber >= 0 ? el('span.calweek', `W${d.weekNumber}`) : null),
       d.test ? el('div.caltag.is-test', d.test) : null,
       d.milestone && !d.test ? el('div.caltag.is-mile', d.milestone) : null,
       el('div.calfoot',
@@ -733,7 +876,7 @@ async function viewCalendar(arg) {
             days < 0 ? 'done' : days === 0 ? 'TODAY' : `${days} days`)));
       }))),
 
-    el('div.card', el('h2', 'The seven weeks'),
+    el('div.card', el('h2', 'Your plan, week by week'),
       el('div.list', data.weeks.map((w) => el('div.item',
         el('div.row',
           el('span.pill' + (w.kind === 'taper' ? '.orange' : '.green'), `W${w.number} · ${w.kind}`),
@@ -746,6 +889,13 @@ async function viewCalendar(arg) {
 /* ======================================================================= */
 /* TEST SETUP                                                               */
 /* ======================================================================= */
+/* The practice-test build in flight, shared by every visit to the Test tab, and
+   whether this session has already tried building automatically. A bank that
+   cannot make a full test stays at zero tests, and every visit used to start
+   the whole build (and a read of every PDF) again. */
+let practiceBuild = null;
+let practiceAutoTried = false;
+
 async function viewTest() {
   const [bank, stored] = await Promise.all([api('bank'), api('tests')]);
   const s = bank.settings;
@@ -862,7 +1012,10 @@ async function viewTest() {
         ? `Reading the question type of ${blank.toLocaleString()} questions from your PDFs, then assembling as many Bluebook-shaped tests as your bank can make. This takes a minute.`
         : 'Assembling as many Bluebook-shaped tests as your question bank can make...'),
       el('div.spin'));
-    const r = await api('tests/build', { body: {} });
+    practiceBuild = practiceBuild
+      || api('tests/build', { body: {} }).finally(() => { practiceBuild = null; });
+    const r = await practiceBuild;
+    if (!testsCard.isConnected) return;            // you moved on; the tab will show them next time
     if (!r || r.error) {
       toast(r?.error || "Couldn't build the tests.", true);
       return drawTests(stored?.tests || []);
@@ -881,6 +1034,7 @@ async function viewTest() {
   mount(
     el('div.head', el('div', el('h1', '🎯 Test'),
       el('p.sub', 'Numbered practice tests shaped like Bluebook, or a fresh adaptive test assembled on the spot.'))),
+    pausedCard(),
     testsCard,
     el('h2', { style: { margin: '22px 0 4px' } }, '🎲 Custom adaptive test'),
     el('p.sub', { style: { marginBottom: '10px' } }, 'A new test every time. Module 1 is a mixed-difficulty baseline, and your accuracy on it decides whether Module 2 is the harder or the easier form. Timing and routing here apply to the practice tests too.'),
@@ -895,8 +1049,11 @@ async function viewTest() {
         },
       }, '🚀 Start test')));
 
-  if (!(stored?.tests || []).length && stored?.bankOk) build();
-  else drawTests(stored?.tests || []);
+  if (practiceBuild) build();                       // one is already running: show it
+  else if (!(stored?.tests || []).length && stored?.bankOk && !practiceAutoTried) {
+    practiceAutoTried = true;
+    build();
+  } else drawTests(stored?.tests || []);
 }
 
 /* ======================================================================= */
@@ -984,6 +1141,7 @@ async function viewDrill(preselect) {
   mount(
     el('div.head', el('div', el('h1', '🎓 Targeted Drill'),
       el('p.sub', 'Questions are ordered easiest to hardest inside each domain, the same way College Board sequences them.'))),
+    pausedCard(),
     el('div.grid.c2', setup, domains),
     el('div.row', el('button.btn.primary.lg', {
       onclick: () => {
@@ -1060,7 +1218,7 @@ async function viewCheck(preselect) {
 
   const domains = el('div.card',
     el('div.row', el('h2', 'Domains'), el('div.spacer', { style: { flex: 1 } }),
-      el('button.btn.ghost.sm', { onclick: () => { chosen.clear(); bank.domains.forEach((d) => chosen.add(d.name)); viewCheck({ section: state.section, domains: [...chosen] }); } }, 'All'),
+      el('button.btn.ghost.sm', { onclick: () => { bank.domains.forEach((d) => chosen.add(d.name)); domainList.querySelectorAll('input').forEach((b) => { b.checked = true; }); updateAvailability(); } }, 'All'),
       el('button.btn.ghost.sm', { onclick: () => { chosen.clear(); domainList.querySelectorAll('input').forEach((b) => { b.checked = false; }); updateAvailability(); } }, 'None')),
     domainList, availability);
 
@@ -1068,6 +1226,7 @@ async function viewCheck(preselect) {
   mount(
     el('div.head', el('div', el('h1', '✅ Check Mode'),
       el('p.sub', 'Answer a question and see straight away whether you got it, and why. The fastest way to learn a question type you keep missing.'))),
+    pausedCard(),
     el('div.grid.c2', setup, domains),
     el('div.row', el('button.btn.primary.lg', {
       onclick: () => {
@@ -1081,19 +1240,34 @@ async function viewCheck(preselect) {
 /* ======================================================================= */
 /* SITTING LIFECYCLE                                                        */
 /* ======================================================================= */
-async function startTest(body) { handleStep(await api('start/test', { body })); }
-async function startDrill(body) { handleStep(await api('start/drill', { body })); }
-async function startCheck(body) { handleStep(await api('start/check', { body })); }
-async function startPractice(body) { handleStep(await api('start/practice', { body })); }
-async function startRedo(limit) { handleStep(await api('start/redo', { body: { limit: limit || 10 } })); }
-async function startPool(ids, label) { handleStep(await api('start/pool', { body: { questionIds: ids, label } })); }
+async function beginSitting(path, body) {
+  if (!okToStartNew()) return null;
+  const data = await sittingCall(path, body);
+  handleStep(data);
+  return data;
+}
+function startTest(body) { return beginSitting('start/test', body); }
+function startDrill(body) { return beginSitting('start/drill', body); }
+function startCheck(body) { return beginSitting('start/check', body); }
+function startPractice(body) { return beginSitting('start/practice', body); }
+function startRedo(limit) {
+  return beginSitting('start/redo', { limit: Number.isInteger(limit) ? limit : 10 });
+}
+function startPool(ids, label) { return beginSitting('start/pool', { questionIds: ids, label }); }
 
 function handleStep(data) {
+  if (data === null) return;               // a second click while the first was on its way
   if (!data || data.error) { applyFocus(false); refreshBoot(); return; }
   // A break is still the sitting, so the chrome stays hidden through it. The
   // review screen is afterwards, and afterwards you want the tabs back.
-  if (data.step === 'module') { applyFocus(focusWanted()); return renderQuiz(data); }
-  if (data.step === 'break') { applyFocus(focusWanted()); return renderBreak(data.break); }
+  if (data.step === 'module' || data.step === 'break') {
+    // A screen still loading (a tab clicked just before Resume) must not land
+    // on top of the sitting: it would hide a quiz that is still live.
+    go._nav = (go._nav || 0) + 1;
+    clearTimeout(go._spinner);
+    applyFocus(focusWanted());
+    return data.step === 'module' ? renderQuiz(data) : renderBreak(data.break);
+  }
   if (data.step === 'done') {
     State.quiz = null; applyFocus(false); refreshBoot();
     return renderReview(data.summary);
@@ -1104,15 +1278,30 @@ function handleStep(data) {
 /* QUIZ                                                                     */
 /* ======================================================================= */
 function renderQuiz(payload) {
+  // A quiz still on screen (a double-clicked Start, a reply that arrived twice)
+  // has to stop before this one takes over. Its clock used to run on, hidden,
+  // and hand in a blank module when it reached zero.
+  if (State.quiz) {
+    try { State.quiz.stop?.(); } catch (e) { /* already stopped */ }
+    try { State.quiz.unbind?.(); } catch (e) { /* already unbound */ }
+  }
+  State.onBreak = false;
   const module = payload.module;
   const questions = module.questions;
+  // Picking a paused sitting back up: the same question, the same answers,
+  // flags and crossed-out choices, and the clock where it stopped.
+  const R = payload.restore && typeof payload.restore === 'object' ? payload.restore : null;
+  const asSet = (xs) => new Set((Array.isArray(xs) ? xs : []).map(Number).filter(Number.isInteger));
   const Q = {
-    questions, index: 0, answers: {}, flagged: new Set(), shaky: new Set(),
-    eliminated: {}, times: {}, enteredAt: performance.now(),
-    remaining: payload.timed ? module.timeLimit : null,
+    questions, moduleId: payload.moduleId ?? null,
+    index: Math.min(Math.max(Number(R?.index) || 0, 0), Math.max(questions.length - 1, 0)),
+    answers: { ...(R?.answers || {}) }, flagged: asSet(R?.flagged), shaky: asSet(R?.shaky),
+    eliminated: Object.fromEntries(Object.entries(R?.eliminated || {})
+      .map(([k, v]) => [k, new Set(Array.isArray(v) ? v : [])])),
+    times: { ...(R?.times || {}) }, enteredAt: performance.now(),
     perQuestion: !!payload.perQuestionTimer, crossOut: false, hidden: false,
-    started: Date.now(), submitted: false, zoom: 1,
-    checked: {},          // check mode: index -> what the server said about it
+    submitted: false, zoom: 1,
+    checked: { ...(R?.checked || {}) },   // check mode: index -> what the server said about it
   };
   State.quiz = Q;
   // Check mode: each answer is graded the moment you commit to it, and then
@@ -1120,23 +1309,55 @@ function renderQuiz(payload) {
   const checkMode = payload.mode === 'check';
   const hasMath = questions.some((q) => q.section === 'Math');
 
+  /* --- time, read off the clock rather than counted in ticks.
+     The old countdown subtracted one per setInterval tick, and a browser slows
+     a background tab's timers (Chrome to once a minute), so glancing at another
+     tab made the module clock run slow. Now it is a deadline. */
+  const timed = !!payload.timed;
+  const openedAt = performance.now();
+  const elapsedBefore = Math.max(0, Number(R?.elapsed) || 0);
+  const limit = timed ? Math.max(0, Number(R?.remaining ?? module.timeLimit) || 0) : null;
+  const deadline = timed ? openedAt + limit * 1000 : null;
+  Q.elapsed = () => elapsedBefore + (performance.now() - openedAt) / 1000;
+  Q.remaining = () => (timed ? Math.max(0, Math.ceil((deadline - performance.now()) / 1000)) : null);
+  Q.state = () => {
+    const times = { ...Q.times };
+    const spent = performance.now() - Q.enteredAt;
+    if (spent > 0 && spent < 3.6e6) times[Q.index] = (times[Q.index] || 0) + Math.round(spent);
+    return {
+      index: Q.index, answers: Q.answers, flagged: [...Q.flagged], shaky: [...Q.shaky],
+      eliminated: Object.fromEntries(Object.entries(Q.eliminated).map(([k, v]) => [k, [...v]])),
+      times, remaining: Q.remaining(), elapsed: Math.round(Q.elapsed()), checked: Q.checked,
+    };
+  };
+
   /* --- chrome */
   const ctx = el('div.ctx', payload.context);
   const counter = el('span.faint');
-  const timerBtn = el('button.timer', { onclick: () => { Q.hidden = !Q.hidden; paintTimer(); } });
+  const timerBtn = el('button.timer', { onclick: () => { Q.hidden = !Q.hidden; paintTimer(true); } });
+  const wall = el('span.wallclock', { title: 'The time right now' });
+  const tool = (icon, label, attrs) => el('button.btn.ghost.sm.tool', { title: label, ...attrs },
+    icon, el('span.lbl', ' ' + label));
   const flagBtn = el('button.btn.ghost.sm', { onclick: toggleFlag }, '🚩 Flag');
-  const shakyBtn = el('button.btn.ghost.sm', { onclick: toggleShaky }, '🤔 Not sure');
-  const crossBtn = el('button.btn.ghost.sm', { onclick: () => { Q.crossOut = !Q.crossOut; crossBtn.className = 'btn sm ' + (Q.crossOut ? 'purple' : 'ghost'); crossBtn.textContent = Q.crossOut ? '⊘ Crossing' : '⊘ Cross out'; } }, '⊘ Cross out');
+  const shakyBtn = tool('🤔', 'Not sure', { onclick: toggleShaky });
+  const crossLabel = el('span.lbl', ' Cross out');
+  const crossBtn = el('button.btn.ghost.sm.tool', { title: 'Cross out choices (X)', onclick: () => {
+    Q.crossOut = !Q.crossOut;
+    crossBtn.className = 'btn sm tool ' + (Q.crossOut ? 'purple' : 'ghost');
+    crossLabel.textContent = Q.crossOut ? ' Crossing' : ' Cross out';
+  } }, '⊘', crossLabel);
   const progress = el('i');
   const img = el('img', { alt: 'Question', decoding: 'async' });
+  img.addEventListener('error', () => { if (img.isConnected) fill(imgWrap, el('div.qmissing', '[ Question image missing ]')); });
   const imgWrap = el('div.qwrap', img);
   const choicesEl = el('div.choices');
-  const gridIn = el('input', { type: 'text', placeholder: 'Type your answer (fractions like 3/4 are fine)…', oninput: (e) => { if (!Q.checked[Q.index]) Q.answers[Q.index] = e.target.value; if (checkMode) paintState(); } });
+  const gridIn = el('input', { type: 'text', placeholder: 'Type your answer (fractions like 3/4 are fine)…', oninput: (e) => { if (Q.submitted || Q.checked[Q.index]) return; Q.answers[Q.index] = e.target.value; saveSoon(); if (checkMode) paintState(); } });
   const answers = el('div.answers');
   const prevBtn = el('button.btn', { onclick: () => move(-1) }, '◄ Previous');
   const nextBtn = el('button.btn.blue', { onclick: () => move(1) }, 'Next ►');
   const feedback = el('div.checkfb');
   const checkBtn = el('button.btn.primary', { onclick: () => doCheck() }, 'Check ✓');
+  const sending = el('div.sending');
   let refPanel = null;
   function toggleReference() {
     if (refPanel) { refPanel.remove(); refPanel = null; return; }
@@ -1145,14 +1366,16 @@ function renderQuiz(payload) {
   }
 
   const shell = el('div.quiz',
-    el('div.quizbar', ctx,
+    el('div.quizbar',
+      el('div.qhead', ctx, counter),
       module.tier && !['drill', 'review', 'check'].includes(payload.mode) ? el('span.pill.blue', module.tierLabel?.split('-')[0]?.trim()) : null,
-      counter, timerBtn, el('div.spacer', { style: { flex: 1 } }),
-      hasMath ? el('button.btn.ghost.sm', { onclick: openDesmos }, '🧮 Calc') : null,
-      hasMath ? el('button.btn.ghost.sm', { onclick: toggleReference, title: 'Formulas (like Bluebook\'s Reference)' }, '📐 Reference') : null,
-      el('button.btn.ghost.sm', { onclick: openNotes }, '📝 Note'),
+      timerBtn, wall, el('div.spacer', { style: { flex: 1 } }),
+      hasMath ? tool('🧮', 'Calc', { onclick: openDesmos }) : null,
+      hasMath ? tool('📐', 'Reference', { onclick: toggleReference, title: 'Formulas (like Bluebook\'s Reference)' }) : null,
+      tool('📝', 'Note', { onclick: openNotes }),
       crossBtn, shakyBtn, flagBtn,
       el('button.btn.primary.sm', { onclick: confirmSubmit }, 'Submit')),
+    sending,
     el('div.progress', progress),
     imgWrap,
     answers,
@@ -1170,6 +1393,20 @@ function renderQuiz(payload) {
   const target = screenEl();
   target.className = 'screen flush';
   fill(target, shell);
+
+  /* --- saving as you go. Leaving the screen pauses the sitting with these
+     answers; this covers the cases where there is no chance to say goodbye:
+     the laptop dies, the browser crashes, the app is killed. */
+  let saveTimer = null;
+  function saveSoon() {
+    clearTimeout(saveTimer);
+    saveTimer = setTimeout(saveNow, 1500);
+  }
+  function saveNow() {
+    clearTimeout(saveTimer);
+    if (Q.submitted || State.quiz !== Q) return;
+    api('autosave', { body: { moduleId: Q.moduleId, state: Q.state() }, quiet: true });
+  }
 
   /* --- rendering: only the parts that changed */
   function paintQuestion() {
@@ -1191,6 +1428,7 @@ function renderQuiz(payload) {
     }
     paintState();
     paintFeedback();
+    paintTimer(true);
     prefetch();
   }
 
@@ -1213,7 +1451,7 @@ function renderQuiz(payload) {
   function paintState() {
     flagBtn.className = 'btn sm ' + (Q.flagged.has(Q.index) ? 'amber' : 'ghost');
     flagBtn.textContent = Q.flagged.has(Q.index) ? '🚩 Flagged' : '🚩 Flag';
-    shakyBtn.className = 'btn sm ' + (Q.shaky.has(Q.index) ? 'purple' : 'ghost');
+    shakyBtn.className = 'btn sm tool ' + (Q.shaky.has(Q.index) ? 'purple' : 'ghost');
     prevBtn.disabled = Q.index === 0;
     nextBtn.textContent = Q.index === questions.length - 1 ? 'Review ►' : 'Next ►';
     if (checkMode) {
@@ -1243,28 +1481,29 @@ function renderQuiz(payload) {
   }
 
   function move(delta) {
+    if (Q.submitted) return;
     if (delta > 0 && Q.index === questions.length - 1) return confirmSubmit();
     const next = Q.index + delta;
     if (next < 0 || next >= questions.length) return;
-    bankTime(); Q.index = next; paintQuestion();
+    bankTime(); Q.index = next; paintQuestion(); saveSoon();
   }
-  function jump(i) { bankTime(); Q.index = i; paintQuestion(); }
+  function jump(i) { if (Q.submitted) return; bankTime(); Q.index = i; paintQuestion(); saveSoon(); }
 
   function pick(letter) {
-    if (Q.checked[Q.index]) return;
+    if (Q.submitted || Q.checked[Q.index]) return;
     if ((Q.eliminated[Q.index] || new Set()).has(letter)) return;
     Q.answers[Q.index] = Q.answers[Q.index] === letter ? '' : letter;
-    paintState();
+    paintState(); saveSoon();
   }
   function eliminate(letter) {
-    if (Q.checked[Q.index]) return;
+    if (Q.submitted || Q.checked[Q.index]) return;
     if (Q.answers[Q.index] === letter) return;
     const set = (Q.eliminated[Q.index] ||= new Set());
     set.has(letter) ? set.delete(letter) : set.add(letter);
-    paintState();
+    paintState(); saveSoon();
   }
   async function doCheck() {
-    if (!checkMode || Q.checked[Q.index]) return;
+    if (!checkMode || Q.submitted || Q.checked[Q.index]) return;
     const answer = String(Q.answers[Q.index] || '').trim();
     if (!answer) return toast('Pick an answer first, then check it.', true);
     const at = Q.index;
@@ -1272,6 +1511,7 @@ function renderQuiz(payload) {
     const r = await api('check', { body: { index: at, answer } });
     if (!r || r.error) { checkBtn.disabled = false; return toast(r?.error || "Couldn't check that one.", true); }
     Q.checked[at] = r;
+    saveNow();
     if (Q.index === at) { paintState(); paintFeedback(); if (questions[at].openEnded) gridIn.readOnly = true; }
   }
 
@@ -1283,40 +1523,68 @@ function renderQuiz(payload) {
     fill(feedback,
       el('div.verdict', r.correct ? '✓ Correct' : `✗ Not quite. The answer is ${r.correctAnswer}.`),
       r.rationale
-        ? el('img.rationale', { src: r.rationale, alt: 'Explanation', decoding: 'async' })
+        ? safeImg(el('img.rationale', { src: r.rationale, alt: 'Explanation', decoding: 'async' }),
+          'The explanation image is missing from disk.')
         : r.rationaleText
           ? el('p.rationaletext', r.rationaleText)
           : el('p.faint', 'No explanation was saved with this question.'));
   }
 
-  function toggleFlag() { Q.flagged.has(Q.index) ? Q.flagged.delete(Q.index) : Q.flagged.add(Q.index); paintState(); }
-  function toggleShaky() { Q.shaky.has(Q.index) ? Q.shaky.delete(Q.index) : Q.shaky.add(Q.index); paintState(); }
+  function toggleFlag() { if (Q.submitted) return; Q.flagged.has(Q.index) ? Q.flagged.delete(Q.index) : Q.flagged.add(Q.index); paintState(); saveSoon(); }
+  function toggleShaky() { if (Q.submitted) return; Q.shaky.has(Q.index) ? Q.shaky.delete(Q.index) : Q.shaky.add(Q.index); paintState(); saveSoon(); }
 
-  /* --- timers: one interval, not one per widget */
-  function paintTimer() {
-    if (Q.hidden) { timerBtn.textContent = '⏱ show'; timerBtn.className = 'timer'; return; }
-    if (Q.remaining !== null) {
-      timerBtn.textContent = `⏳ ${clock(Q.remaining)}`;
-      timerBtn.className = 'timer' + (Q.remaining <= 60 ? ' crit' : Q.remaining <= 300 ? ' warn' : '');
+  /* --- the clock: one interval, and the DOM is touched only when the text changes.
+     The wall clock is there because focus mode hides everything else, and a
+     full-screen browser hides the system clock too. */
+  let shownTimer = '', shownWall = '';
+  function paintTimer(force) {
+    let text, cls = 'timer', title;
+    if (Q.hidden) {
+      text = '⏱ show'; title = 'Show the timer';
+    } else if (timed) {
+      const left = Q.remaining();
+      text = `⏳ ${clock(left)}`;
+      cls += left <= 60 ? ' crit' : left <= 300 ? ' warn' : '';
+      title = 'Time left on this module. Click to hide it.';
     } else if (Q.perQuestion) {
       const spent = ((Q.times[Q.index] || 0) + (performance.now() - Q.enteredAt)) / 1000;
-      timerBtn.textContent = `⏱ ${clock(spent)}`;
-    } else timerBtn.style.display = 'none';
-  }
-  paintTimer();
-  const ticker = setInterval(() => {
-    if (Q.submitted) return;
-    if (Q.remaining !== null) {
-      Q.remaining -= 1;
-      if (Q.remaining <= 0) { Q.remaining = 0; paintTimer(); return submit(true); }
+      text = `⏱ ${clock(spent)} · ${clock(Q.elapsed())}`;
+      title = 'This question · the whole set. Click to hide.';
+    } else {
+      text = `⏱ ${clock(Q.elapsed())}`;
+      title = 'Time on this set so far. Click to hide it.';
     }
+    if (force || text !== shownTimer) {
+      timerBtn.textContent = text; timerBtn.className = cls; timerBtn.title = title;
+      shownTimer = text;
+    }
+    const now = new Date().toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+    if (now !== shownWall) { wall.textContent = `🕒 ${now}`; shownWall = now; }
+  }
+  let ticks = 0;
+  function tick() {
+    if (Q.submitted) return;
+    if (timed && Q.remaining() <= 0) { paintTimer(); submit(true); return; }
     paintTimer();
-  }, 1000);
-  Q.stop = () => clearInterval(ticker);
+    ticks += 1;
+    if (ticks % 40 === 0) saveNow();            // every ~20 s, so the saved clock stays close
+  }
+  let ticker = setInterval(tick, 500);
+  Q.stop = () => { clearInterval(ticker); ticker = null; clearTimeout(saveTimer); };
+  const restartClock = () => { if (!ticker) ticker = setInterval(tick, 500); };
 
   /* --- keyboard */
   function onKey(e) {
     if (Q.submitted) return;
+    // Held with Ctrl, Cmd or Alt it is the browser's shortcut, not ours: Ctrl+C
+    // is copy, not "answer C", and Ctrl+F is find, not "flag".
+    if (e.ctrlKey || e.metaKey || e.altKey) return;
+    // Nothing fires behind an open pop-up. Typing a note used to answer and
+    // flag the question underneath it, letter by letter.
+    if (overlayEl().childElementCount) {
+      if (e.key === 'Escape') overlayEl().replaceChildren();
+      return;
+    }
     if (checkMode && e.key === 'Enter' && document.activeElement?.tagName !== 'TEXTAREA') {
       e.preventDefault();
       return Q.checked[Q.index] ? move(1) : doCheck();
@@ -1353,14 +1621,17 @@ function renderQuiz(payload) {
   async function openNotes() {
     const q = questions[Q.index];
     const data = await api(`note/${q.id}`, { quiet: true });
+    if (State.quiz !== Q) return;
     const box = el('textarea', { rows: '10', style: { minHeight: '220px' } }, data.body || '');
     modal('📝 Scratchpad: ' + q.id, box, [
       el('button.btn.primary', {
         onclick: async () => { await api('note', { body: { questionId: q.id, body: box.value } }); toast('Note saved'); },
       }, 'Save note')]);
+    box.focus();
   }
 
   function confirmSubmit() {
+    if (Q.submitted) return;
     bankTime();
     const missing = questions.map((_, i) => i).filter((i) => !(Q.answers[i] || '').trim());
     if (missing.length && !confirm(
@@ -1369,20 +1640,44 @@ function renderQuiz(payload) {
     submit(false);
   }
 
+  /* Handing the module in. The quiz stays on screen until the server has it:
+     this used to swap in a spinner first, so any failure (a timeout, the app
+     restarting, the laptop sleeping) left a spinner with no way back and the
+     answers only in memory. Now a failure says so and offers to try again,
+     and the server replies to a repeat of the same module exactly as it did
+     the first time, so a retry can never grade it twice. */
   async function submit(auto) {
     if (Q.submitted) return;
-    Q.submitted = true; Q.stop(); Q.unbind();
+    Q.submitted = true; Q.stop();
     bankTime();
-    fill(screenEl(), el('div.spin'));
     const body = {
+      moduleId: Q.moduleId,
       answers: Q.answers,
       times: Q.times,
       flagged: [...Q.flagged],
       shaky: [...Q.shaky],
       eliminated: Object.fromEntries(Object.entries(Q.eliminated).map(([k, v]) => [k, [...v]])),
-      elapsed: Math.round((Date.now() - Q.started) / 1000),
+      elapsed: Math.round(Q.elapsed()),
     };
-    handleStep(await api('submit', { body }));
+    sending.className = 'sending on';
+    fill(sending, el('div.spin.sm'),
+      el('span', auto ? 'Time is up. Handing in this module…' : 'Handing in this module…'));
+    const data = await api('submit', { body, quiet: true });
+    if (State.quiz !== Q) { refreshBoot(); return; }      // you left while it was on its way
+    if (!data || data.error) {
+      Q.submitted = false;
+      sending.className = 'sending on bad';
+      fill(sending,
+        el('span', `Could not hand this module in: ${(data && data.error) || 'no reply from the app'}. `
+          + 'Your answers are still here, and saved.'),
+        el('div.spacer', { style: { flex: 1 } }),
+        el('button.btn.primary.sm', { onclick: () => submit(auto) }, 'Try again'));
+      if (!timed || Q.remaining() > 0) restartClock();
+      return;
+    }
+    Q.unbind();
+    State.quiz = null;
+    handleStep(data);
   }
 
   paintQuestion();
@@ -1454,6 +1749,24 @@ function openDesmos() {
 /* ======================================================================= */
 function renderBreak(info) {
   State.quiz = null;
+  State.onBreak = true;
+  let continuing = false;
+  const onContinue = async (e) => {
+    if (continuing) return;
+    continuing = true;
+    const button = e.currentTarget;
+    button.disabled = true;
+    const data = await sittingCall('resume');
+    continuing = false;
+    if (data === null) return;
+    if (!data || data.error) {                 // still on the break: keep it usable
+      button.disabled = false;
+      return;
+    }
+    if (window.__brk) clearInterval(window.__brk);
+    State.onBreak = false;
+    handleStep(data);
+  };
   const nodes = [el('div.card', { style: { maxWidth: '900px', margin: '30px auto', textAlign: 'center' } },
     el('div', { style: { fontSize: '44px' } }, info.kind === 'module' ? '✅' : '☕'),
     el('h1', { style: { marginTop: '6px' } }, info.heading),
@@ -1467,25 +1780,32 @@ function renderBreak(info) {
       ? el('p', { style: { marginTop: '12px', fontSize: '17px', fontWeight: 700 } }, 'Next: ' + info.tierLabel)
       : el('p', { style: { marginTop: '12px', fontWeight: 700 } }, info.nextLabel || ''),
     el('div', { id: 'breakclock', style: { marginTop: '10px', color: 'var(--amber)', fontWeight: 700 } }),
+    el('div', { id: 'breakwall', class: 'faint', style: { marginTop: '4px' } }),
     el('div.row', { style: { justifyContent: 'center', marginTop: '20px' } },
-      el('button.btn.primary.lg', { onclick: async () => { if (window.__brk) clearInterval(window.__brk); handleStep(await api('resume', { body: {} })); } },
+      el('button.btn.primary.lg', { onclick: onContinue },
         info.minutes ? 'Skip break and continue ►' : `Continue to ${info.nextLabel || 'the next module'} ►`)),
     el('div.row', { style: { justifyContent: 'center', marginTop: '10px' } },
-      el('button.btn.ghost.sm', { onclick: async () => { if (window.__brk) clearInterval(window.__brk); await api('abandon', { body: {} }); refreshBoot(); go('plan'); } }, 'Save and exit')))];
+      // Leaving pauses the sitting right here, at the break (see leaveSitting).
+      el('button.btn.ghost.sm', { onclick: () => go('plan') }, 'Save and exit')),
+    el('p.faint', { style: { marginTop: '8px' } },
+      'Save and exit keeps your place. Resume brings you back to this break, today or another day.'))];
   mount(nodes);
 
-  if (info.minutes) {
-    let left = info.minutes * 60;
-    const paint = () => {
-      const node = document.getElementById('breakclock');
-      if (!node) return clearInterval(window.__brk);
+  // Counted against the clock, not in ticks, for the same reason as the quiz.
+  const ends = Date.now() + (info.minutes || 0) * 60 * 1000;
+  const paint = () => {
+    const node = document.getElementById('breakclock');
+    if (!node) return clearInterval(window.__brk);
+    if (info.minutes) {
+      const left = Math.ceil((ends - Date.now()) / 1000);
       node.textContent = left > 0 ? `⏳ ${clock(left)} remaining` : 'Break over. Continue when ready.';
-      left -= 1;
-    };
-    paint();
-    if (window.__brk) clearInterval(window.__brk);
-    window.__brk = setInterval(paint, 1000);
-  }
+    }
+    const wallNode = document.getElementById('breakwall');
+    if (wallNode) wallNode.textContent = `🕒 ${new Date().toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}`;
+  };
+  paint();
+  if (window.__brk) clearInterval(window.__brk);
+  window.__brk = setInterval(paint, 1000);
 }
 
 /* ======================================================================= */
@@ -1629,9 +1949,9 @@ function showExplanation(r) {
       covered(el('span', { style: { color: 'var(--green)', fontWeight: 700 } },
         `Correct answer: ${r.correctAnswer}`))),
     el('h3', { style: { marginTop: '14px' } }, 'Question'),
-    r.image ? el('img', { src: r.image, style: { background: '#fff', borderRadius: '8px' } }) : el('p.faint', 'The question image is missing. Re-run sat_importer.py.'),
+    r.image ? safeImg(el('img', { src: r.image, style: { background: '#fff', borderRadius: '8px' } }), 'The question image is missing from disk.') : el('p.faint', 'The question image is missing. Re-run sat_importer.py.'),
     el('h3', { style: { marginTop: '16px' } }, 'College Board rationale'),
-    r.rationale ? covered(el('img', { src: r.rationale, style: { background: '#fff', borderRadius: '8px' } }), 'explanation')
+    r.rationale ? covered(safeImg(el('img', { src: r.rationale, style: { background: '#fff', borderRadius: '8px' } }), 'The rationale image is missing from disk.'), 'explanation')
       : el('p.faint', 'No rationale image was captured. Make sure you downloaded the PDF with answers and explanations, then re-import.'),
   ]);
 }
@@ -1672,13 +1992,19 @@ async function viewLog(sessionId) {
 
   const untagged = data.entries.filter((e) => !e.rootCause).length;
   const listEl = el('div.list');
-  let shown = 12;
+  let shown = 0;
+  /* Adds the next rows under the ones already there. Rebuilding the whole
+     list on "Show more" wiped any fix you had typed but not saved yet, closed
+     every question you had opened, and got slower with every click. */
   function paint() {
-    fill(listEl, 
-      ...data.entries.slice(0, shown).map(logRow),
-      data.entries.length > shown
-        ? el('button.btn.block', { onclick: () => { shown += 12; paint(); } }, `Show ${Math.min(12, data.entries.length - shown)} more (${data.entries.length - shown} left)`)
-        : null);
+    listEl.querySelector(':scope > .more')?.remove();
+    const next = data.entries.slice(shown, shown + 12);
+    shown += next.length;
+    listEl.append(...next.map(logRow));
+    if (data.entries.length > shown) {
+      listEl.append(el('button.btn.block.more', { onclick: paint },
+        `Show ${Math.min(12, data.entries.length - shown)} more (${data.entries.length - shown} left)`));
+    }
   }
 
   function logRow(entry) {
@@ -1690,6 +2016,8 @@ async function viewLog(sessionId) {
         e.target.parentNode.querySelectorAll('button').forEach((b) => b.classList.remove('on'));
         e.target.classList.add('on');
         if (result.scheduled) toast('Redo scheduled for tomorrow, +3 and +10 days');
+        refreshBoot();                               // the "N untagged" pill
+
       } }, `${c.code} ${c.label}`));
 
     const input = el('input', { type: 'text', value: entry.fixNote || '',
@@ -1705,6 +2033,8 @@ async function viewLog(sessionId) {
       if (result.scheduled) toast('Redo scheduled for tomorrow, +3 and +10 days');
     };
     input.addEventListener('keydown', (e) => { if (e.key === 'Enter') save(); });
+    // Leaving the box saves it too; a typed fix no longer waits for Enter.
+    input.addEventListener('change', () => { if (input.value !== (entry.fixNote || '')) save(); });
 
     return el('div.card.sunken',
       el('div.row',
@@ -1727,10 +2057,10 @@ async function viewLog(sessionId) {
           el('summary', `▼ Show question & rationale  ·  id ${entry.questionId}`,
             entry.rationale ? '' : '  (no rationale captured)'),
           el('h3', { style: { marginTop: '6px' } }, 'Question'),
-          entry.image ? el('img', { src: entry.image, loading: 'lazy', style: { background: '#fff', borderRadius: '8px', maxWidth: '760px' } }) : el('p.faint', 'Image missing.'),
+          entry.image ? safeImg(el('img', { src: entry.image, loading: 'lazy', style: { background: '#fff', borderRadius: '8px', maxWidth: '760px' } }), 'The question image is missing from disk.') : el('p.faint', 'Image missing.'),
           entry.note ? [el('h3', { style: { marginTop: '10px' } }, 'Your note'), el('p.wrapish', entry.note)] : null,
           el('h3', { style: { marginTop: '10px' } }, 'College Board rationale'),
-          entry.rationale ? el('img', { src: entry.rationale, loading: 'lazy', style: { background: '#fff', borderRadius: '8px', maxWidth: '760px' } })
+          entry.rationale ? safeImg(el('img', { src: entry.rationale, loading: 'lazy', style: { background: '#fff', borderRadius: '8px', maxWidth: '760px' } }), 'The rationale image is missing from disk.')
             : el('p.faint', 'No rationale image was captured for this question.')),
 
       el('div.faint', { style: { marginTop: '10px' } }, 'WHY DID YOU MISS IT?'),
@@ -1754,19 +2084,26 @@ async function viewLog(sessionId) {
 async function viewHistory() {
   const data = await api('history');
   let filter = 'All';
+  let limit = 40;
   const listEl = el('div.list');
-  const MODES = { full_test: ['Full test', '🎯'], section_test: ['Section test', '🎯'], drill: ['Drill', '🎓'], review: ['Review', '🔁'] };
+  const MODES = { full_test: ['Full test', '🎯'], section_test: ['Section test', '🎯'], drill: ['Drill', '🎓'],
+    check: ['Check mode', '✅'], review: ['Review', '🔁'] };
 
   function matches(s) {
     if (filter === 'All') return true;
     if (filter === 'Tests') return ['full_test', 'section_test'].includes(s.mode);
-    if (filter === 'Drills') return s.mode === 'drill';
+    if (filter === 'Drills') return ['drill', 'check'].includes(s.mode);
     return s.mode === 'review';
   }
+  /* Forty at a time. All three hundred sessions used to be drawn at once, and
+     drawn again on every filter click and every delete. */
   function paint() {
     const rows = data.sessions.filter(matches);
-    fill(listEl, ...(rows.length ? rows.map(row)
-      : [empty('🗂', 'No sessions yet', 'Finish a practice test or drill and it will be saved here permanently.', 'Start a test', () => go('test'))]));
+    fill(listEl, ...(rows.length ? rows.slice(0, limit).map(row)
+      : [empty('🗂', 'No sessions yet', 'Finish a practice test or drill and it will be saved here permanently.', 'Start a test', () => go('test'))]),
+      rows.length > limit
+        ? el('button.btn.block', { onclick: () => { limit += 40; paint(); } }, `Show more (${rows.length - limit} older)`)
+        : null);
   }
   function row(s) {
     const total = s.total_questions || s.attempt_count || 0;
@@ -1775,13 +2112,23 @@ async function viewHistory() {
     return el('div.item',
       el('div.row',
         el('span', icon), el('strong', s.label || label),
-        s.status !== 'completed' ? el('span.pill.orange', 'incomplete') : null,
+        s.status === 'paused' ? el('span.pill.blue', '🔖 paused')
+          : s.status !== 'completed' ? el('span.pill.orange', 'incomplete') : null,
         (s.tierLabels || []).length > 1 ? el('span.faint', s.tierLabels.join(' → ')) : null,
         el('div.spacer', { style: { flex: 1 } }),
         total ? el('span', { style: { color: accColor(accuracy), fontWeight: 700 } }, `${s.correct_count}/${total}`) : el('span.faint', 'no answers'),
         s.estimated_score ? el('span.pill.green', `est. ${s.estimated_score}`) : null,
-        el('button.btn.sm', { onclick: async () => { const r = await api(`review/${s.session_id}`); if (!r.error) renderReview(r); } }, 'Open review'),
-        el('button.btn.sm.ghost', { onclick: async () => { if (confirm(`Delete “${s.label}”? This cannot be undone.`)) { await api(`history/${s.session_id}`, { method: 'DELETE', body: {} }); viewHistory(); } } }, '🗑')),
+        State.boot?.paused?.sessionId === s.session_id
+          ? el('button.btn.sm.primary', { onclick: resumePaused }, '▶ Resume')
+          : el('button.btn.sm', { onclick: async () => { const r = await api(`review/${s.session_id}`); if (!r.error) renderReview(r); } }, 'Open review'),
+        el('button.btn.sm.ghost', { onclick: async () => {
+          if (!confirm(`Delete “${s.label}”? This cannot be undone.`)) return;
+          const r = await api(`history/${s.session_id}`, { method: 'DELETE', body: {} });
+          if (r && r.error) return;
+          data.sessions = data.sessions.filter((x) => x.session_id !== s.session_id);
+          paint();
+          if (State.boot?.paused?.sessionId === s.session_id) refreshBoot();
+        } }, '🗑')),
       el('div.faint', `${when(s.started_at)} · ${s.section || '-'}${s.duration_seconds ? ' · ' + dur(s.duration_seconds) : ''}`));
   }
 
@@ -2352,7 +2699,7 @@ async function viewProfileSetup() {
   // one stray year stretched every generated plan out to it. Loading the saved
   // list means the rows you see are the rows that will be stored: edit one,
   // delete one, and save replaces the lot.
-  const saved = await api('setup/profile', { quiet: true, nav: false });
+  const saved = await api('setup/profile', { quiet: true });
   const dates = (saved && saved.testDates && saved.testDates.length)
     ? saved.testDates.map((d) => ({ date: d.date || '', label: d.label || '' }))
     : [{ date: '', label: '' }];
@@ -2608,12 +2955,24 @@ async function viewMigrate() {
     poll();
   }
 
+  /* Only the newest Move My Data screen polls. Every revisit during a copy
+     used to start another chain alongside the old ones, each asking every 0.8s. */
+  const pollToken = (viewMigrate.pollToken = (viewMigrate.pollToken || 0) + 1);
+  let pollMisses = 0;
   async function poll() {
-    if (!polling) return;
+    if (!polling || viewMigrate.pollToken !== pollToken) return;
     /* nav:false, same reason the importer polls that way: this has to survive
        whatever the user clicks for the several minutes a copy takes. */
     const p = await api('setup/migrate/progress', { quiet: true, nav: false });
-    if (!p || p.offline || !p.state) { return setTimeout(poll, 1500); }
+    if (!p || p.offline || !p.state) {
+      pollMisses += 1;
+      if (pollMisses < 20) return setTimeout(poll, 1500);
+      polling = false;
+      return fill(runBox, el('div.card', el('h2', '🔌 Lost contact with the app'),
+        el('p.sub', 'The copy may still be running. Open this screen again to check on it; '
+          + 'nothing already copied is lost.')));
+    }
+    pollMisses = 0;
 
     const pct = Math.round((p.progress || 0) * 100);
     const done = p.state === 'done';

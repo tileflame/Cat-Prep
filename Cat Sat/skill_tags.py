@@ -45,7 +45,7 @@ import re
 from collections import Counter
 from pathlib import Path
 
-from config import DATA_DIR, QUESTION_DB
+from config import DATA_DIR, PROGRESS_DB, QUESTION_DB
 
 #: The official skill names, per domain, as the SAT Suite Question Bank prints
 #: them. Used to recognise a skill however its words were wrapped.
@@ -206,7 +206,7 @@ def blank_count() -> tuple[int, int]:
     return sum(1 for r in rows.values() if is_blank(r[3])), len(rows)
 
 
-def recover(pdfs: list[Path] | None = None, progress=None) -> dict:
+def _recover_questions(pdfs: list[Path] | None = None, progress=None) -> dict:
     """
     Read the PDFs and fill in every blank skill that can be recovered.
 
@@ -276,4 +276,68 @@ def recover(pdfs: list[Path] | None = None, progress=None) -> dict:
     result["filled"] = len(found)
     result["domainsCorrected"] = len(moved)
     result["stillBlank"] = len(blanks) - len(found)
+    return result
+
+
+def sync_attempt_skills() -> int:
+    """
+    File every past answer under its question type. Returns answers updated.
+
+    An answer copies its skill from the question at the moment it is saved, so
+    everything answered before the types were read out of the PDFs was stored
+    as "General", and the Skills panel showed one enormous "General" row and
+    two real ones with a handful of answers each. The questions know their type
+    now; this copies it onto the answers that are still blank. Only blanks: an
+    answer that already has a skill is never touched. The domain comes across
+    with it, which is how the misfiled Algebra question's old answers move to
+    Problem-Solving and Data Analysis along with the question.
+    """
+    import sqlite3
+    if not (Path(QUESTION_DB).is_file() and Path(PROGRESS_DB).is_file()):
+        return 0                                        # never create an empty DB here
+    q = sqlite3.connect(QUESTION_DB)
+    try:
+        known = {str(qid): (domain, skill) for qid, domain, skill in q.execute(
+            "SELECT question_id, domain, skill FROM questions") if not is_blank(skill)}
+    except sqlite3.DatabaseError:
+        return 0
+    finally:
+        q.close()
+    if not known:
+        return 0
+    blank = "(skill IS NULL OR TRIM(skill) = '' OR skill IN ('General', 'Unclassified'))"
+    p = sqlite3.connect(PROGRESS_DB, timeout=5)
+    filed = 0
+    try:
+        # The redo queue carries the type forward from one stage to the next,
+        # so it is kept in step too; only the answers are counted.
+        for table in ("attempts", "redo_queue"):
+            try:
+                waiting = [str(r[0]) for r in p.execute(
+                    f"SELECT DISTINCT question_id FROM {table} WHERE {blank}")]
+                rows = [(known[qid][1], known[qid][0], qid) for qid in waiting if qid in known]
+                if not rows:
+                    continue
+                before = p.total_changes
+                p.executemany(f"UPDATE {table} SET skill = ?, domain = ? "
+                              f"WHERE question_id = ? AND {blank}", rows)
+                if table == "attempts":
+                    filed = p.total_changes - before
+            except sqlite3.DatabaseError:               # an old file without the table
+                continue
+        p.commit()
+        return filed
+    except sqlite3.DatabaseError:                       # locked by another copy, say
+        return 0
+    finally:
+        p.close()
+
+
+def recover(pdfs: list[Path] | None = None, progress=None) -> dict:
+    """Fill blank question types from the PDFs, then carry them onto past answers."""
+    result = _recover_questions(pdfs, progress)
+    try:
+        result["answersFiled"] = sync_attempt_skills()
+    except Exception:                                   # noqa: BLE001
+        result["answersFiled"] = 0
     return result

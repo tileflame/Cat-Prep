@@ -173,14 +173,16 @@ class CatSatHandler(BaseHTTPRequestHandler):
             pass                                  # browser navigated away mid-response
         except Exception as exc:
             traceback.print_exc()
-            # An exception part way through an upload leaves up to 160 MB
-            # unread. Drain before answering or the connection is poisoned for
-            # every request after this one.
-            try:
-                self._drain()
-            except Exception:                             # noqa: BLE001
-                pass
-            self._json({"error": f"{type(exc).__name__}: {exc}"}, 500)
+            # Answer, then close the connection. This used to drain the body
+            # first, but _body() has usually consumed it already, so the drain
+            # sat waiting for bytes that were never coming: any error on a POST
+            # (a failed submit) hung for two minutes instead of answering. A
+            # closed connection also means an upload's unread remainder cannot
+            # be parsed as the next request.
+            self.close_connection = True
+            self._send(500, json.dumps({"error": f"{type(exc).__name__}: {exc}"}),
+                       "application/json; charset=utf-8",
+                       {"Cache-Control": "no-store", "Connection": "close"})
 
     # ----------------------------------------------------------------- setup
 
@@ -340,6 +342,8 @@ class CatSatHandler(BaseHTTPRequestHandler):
                 return self._json(api.practice_tests())
             if route == "skills":
                 return self._json(api.skill_status())
+            if route == "paused":
+                return self._json({"paused": api.paused_info()})
 
         # --- writes
         if method == "POST":
@@ -393,6 +397,14 @@ class CatSatHandler(BaseHTTPRequestHandler):
                 return self._json(api.resume())
             if route == "abandon":
                 return self._json(api.abandon())
+            if route == "autosave":
+                return self._json(api.autosave(body))
+            if route == "pause":
+                return self._json(api.pause(body))
+            if route == "paused/resume":
+                return self._json(api.resume_paused())
+            if route == "paused/discard":
+                return self._json(api.discard_paused())
             if route == "plan/task":
                 return self._json(api.set_plan_task(
                     body.get("day"), body.get("key"), body.get("done")))
@@ -428,6 +440,19 @@ class CatSatServer(ThreadingHTTPServer):
     def __init__(self, address, handler, api):
         super().__init__(address, handler)
         self.api = api
+
+    def process_request_thread(self, request, client_address):
+        # One thread per browser connection, and each opens its own database
+        # connections. Close them when the connection ends, or they pile up
+        # for as long as the app is open (see database.release_thread_pool).
+        try:
+            super().process_request_thread(request, client_address)
+        finally:
+            try:
+                import database
+                database.release_thread_pool()
+            except Exception:                             # noqa: BLE001
+                pass
 
 
 def free_port(preferred: int = 8756) -> int:
@@ -466,6 +491,18 @@ def create_server(port: int | None = None):
     closed = abandon_stale_sessions()
     if closed:
         print(f"  closed {closed} sitting(s) left open by a previous run")
+
+    # Answers store their question type when they are saved, so everything
+    # answered before the types were read out of the PDFs sits under "General"
+    # and the Skills panel is useless. Filling those in is one pass over two
+    # small tables, and after the first run there is nothing left to fill.
+    try:
+        import skill_tags
+        tagged = skill_tags.sync_attempt_skills()
+        if tagged:
+            print(f"  filed {tagged} past answer(s) under their question type")
+    except Exception:                                     # noqa: BLE001
+        pass
 
     chosen = port if port is not None else free_port()
     server = CatSatServer((HOST, chosen), CatSatHandler, Api())

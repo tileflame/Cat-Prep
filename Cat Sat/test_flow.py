@@ -15,9 +15,10 @@ review        Replay a specific pool (missed / flagged / a past session)
 
 from __future__ import annotations
 
+import json
 import random
 import time
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 
 import adaptive_engine as engine
 import attempt_repo
@@ -174,6 +175,14 @@ class TestRunner:
         self.started_at = time.time()
         self._pending_break = None
         self._finished = False
+        # Pause and resume. The clock on a sitting stops while you are away
+        # from it, so a module you left for a day does not report a day spent.
+        self.paused_seconds = 0.0
+        self._paused_at: float | None = None
+        # True from the moment a module is handed out until it is handed in.
+        # It is what makes a second click on Continue, or a second Submit,
+        # harmless instead of ending the sitting or grading a module twice.
+        self._module_open = False
 
         # Freshness data, fetched once per sitting.
         self.seen = attempt_repo.seen_counts()
@@ -277,6 +286,7 @@ class TestRunner:
         self.current_plan = plan
         self.module_number = plan.module_number
         self.current_tier = plan.tier
+        self._module_open = True
         self.used_ids.update(q.question_id for q in plan.questions)
         self.current_module_row_id = attempt_repo.create_module(
             self.session_id, plan.section, plan.module_number, plan.tier,
@@ -288,52 +298,64 @@ class TestRunner:
     def submit_module(self, records, time_used_seconds: int = 0):
         """
         Hand back what the user did. Persists, routes, and returns the next step.
+
+        Everything that can fail (the database writes, building Module 2) runs
+        BEFORE the module counts as handed in. A write that failed used to leave
+        the module marked handed in with nothing saved, and the rest of the
+        sitting unreachable. Now the module stays open and handing it in again
+        works; answers already on record for it are not written twice.
         """
         plan = self.current_plan
-        if plan is None:
+        if plan is None or not self._module_open:
+            # Already handed in (a double click, or a retry that crossed the
+            # first reply). Never record the same module twice: say where the
+            # sitting already is instead.
+            if self._pending_break:
+                return STEP_BREAK, self._pending_break
             return STEP_DONE, self._finish()
 
         for index, record in enumerate(records, start=1):
             if not record.position:
                 record.position = index
 
-        attempt_repo.record_attempts(self.session_id, self.current_module_row_id, records)
+        if not attempt_repo.module_has_attempts(self.current_module_row_id):
+            attempt_repo.record_attempts(self.session_id, self.current_module_row_id, records)
 
         result = engine.evaluate_module(
             plan.section, plan.module_number, plan.tier, records, time_used_seconds
         )
         result.module_row_id = self.current_module_row_id
 
+        single = self.mode in SINGLE_MODULE_MODES
+        # Module 1 of a test decides where Module 2 goes; nothing else routes.
+        next_tier = None
+        if not single and plan.module_number == 1:
+            next_tier = engine.route(result, threshold=self.threshold,
+                                     use_weighting=self.use_weighting)
+        attempt_repo.finish_module(
+            self.current_module_row_id, correct_count=result.correct,
+            raw_accuracy=result.raw_accuracy,
+            weighted_accuracy=result.weighted_accuracy,
+            routed_to=next_tier, time_used_seconds=time_used_seconds,
+        )
+        next_plan = self._module_plan(plan.section, 2, next_tier) if next_tier else None
+
+        # Nothing below can fail halfway. The module is handed in.
+        self._module_open = False
         outcome = self.outcomes[-1]
         outcome.modules.append(result)
         outcome.records.extend(records)
         self.all_records.extend(records)
 
         # ---- Drills and review sessions have no second module.
-        if self.mode in SINGLE_MODULE_MODES:
-            attempt_repo.finish_module(
-                self.current_module_row_id, correct_count=result.correct,
-                raw_accuracy=result.raw_accuracy,
-                weighted_accuracy=result.weighted_accuracy,
-                routed_to=None, time_used_seconds=time_used_seconds,
-            )
+        if single:
             outcome.final_tier = TIER_BASELINE
             return STEP_DONE, self._finish()
 
-        # ---- Module 1: work out where Module 2 should go.
+        # ---- Module 1: Module 2 is ready, and the break comes first.
         if plan.module_number == 1:
-            next_tier = engine.route(result, threshold=self.threshold,
-                                     use_weighting=self.use_weighting)
-            attempt_repo.finish_module(
-                self.current_module_row_id, correct_count=result.correct,
-                raw_accuracy=result.raw_accuracy,
-                weighted_accuracy=result.weighted_accuracy,
-                routed_to=next_tier, time_used_seconds=time_used_seconds,
-            )
             outcome.final_tier = next_tier
             outcome.routing_note = engine.routing_explanation(result, next_tier, self.threshold)
-
-            next_plan = self._module_plan(plan.section, 2, next_tier)
             if not next_plan.questions:
                 return STEP_DONE, self._finish()
 
@@ -351,13 +373,6 @@ class TestRunner:
             return STEP_BREAK, self._pending_break
 
         # ---- Module 2 finished: close the section out.
-        attempt_repo.finish_module(
-            self.current_module_row_id, correct_count=result.correct,
-            raw_accuracy=result.raw_accuracy,
-            weighted_accuracy=result.weighted_accuracy,
-            routed_to=None, time_used_seconds=time_used_seconds,
-        )
-
         has_more = self.section_index + 1 < len(self.sections)
         if self.mode == MODE_FULL and has_more:
             next_section = self.sections[self.section_index + 1]
@@ -382,9 +397,14 @@ class TestRunner:
     def resume(self):
         """Continue past a break screen."""
         pending = self._pending_break
-        self._pending_break = None
         if not pending:
+            # Nothing to continue past: Continue was clicked twice and the first
+            # click already handed out the next module. Hand out the same one
+            # again. Finishing here used to close a full test after Module 1.
+            if self._module_open and self.current_plan is not None:
+                return STEP_MODULE, self.current_plan
             return STEP_DONE, self._finish()
+        self._pending_break = None
         if pending.get("plan") is not None:
             return self._serve(pending["plan"])
         if "next_section_index" in pending:
@@ -400,14 +420,200 @@ class TestRunner:
             self.session_id,
             total_questions=len(self.all_records),
             correct_count=sum(1 for r in self.all_records if r.is_correct),
-            duration_seconds=int(time.time() - self.started_at),
+            duration_seconds=self.active_seconds(),
             estimated_score=None,
             status="abandoned",
         )
 
+    # ------------------------------------------------------------ pause/resume
+
+    def pause_clock(self) -> None:
+        if self._paused_at is None:
+            self._paused_at = time.time()
+
+    def resume_clock(self) -> None:
+        if self._paused_at is not None:
+            self.paused_seconds += max(0.0, time.time() - self._paused_at)
+            self._paused_at = None
+
+    def active_seconds(self) -> int:
+        """Time actually spent in the sitting: wall time minus every pause."""
+        away = self.paused_seconds
+        if self._paused_at is not None:
+            away += max(0.0, time.time() - self._paused_at)
+        return max(0, int(time.time() - self.started_at - away))
+
+    @property
+    def module_open(self) -> bool:
+        return self._module_open
+
+    @property
+    def pending_break(self):
+        return self._pending_break
+
+    def snapshot(self) -> dict:
+        """
+        Everything needed to rebuild this sitting later, as plain JSON.
+
+        Questions are stored by id and fetched again on the way back, and the
+        modules already handed in are not stored at all: their answers are in
+        the attempts table, which is where restore() reads them from.
+        """
+        def plan_state(plan):
+            if plan is None:
+                return None
+            return {"section": plan.section, "module_number": plan.module_number,
+                    "tier": plan.tier, "time_limit_seconds": plan.time_limit_seconds,
+                    "target_count": plan.target_count,
+                    "question_ids": [q.question_id for q in plan.questions],
+                    "domain_gaps": plan.domain_gaps,
+                    "difficulty_actual": plan.difficulty_actual,
+                    "difficulty_target": plan.difficulty_target,
+                    "skill_gaps": plan.skill_gaps}
+
+        pending = None
+        if self._pending_break:
+            info = self._pending_break
+            result = info.get("result")
+            pending = {key: info[key] for key in (
+                "kind", "section", "heading", "detail", "next_label", "tier", "minutes",
+                "next_section_index") if key in info}
+            pending["plan"] = plan_state(info.get("plan"))
+            pending["result"] = asdict(result) if result is not None else None
+
+        return {
+            "v": 1,
+            "session_id": self.session_id, "mode": self.mode, "label": self.label,
+            "sections": list(self.sections), "timed": self.timed,
+            "threshold": self.threshold, "use_weighting": self.use_weighting,
+            "drill_time_limit": self.drill_time_limit,
+            "section_index": self.section_index, "module_number": self.module_number,
+            "current_tier": self.current_tier,
+            "current_module_row_id": self.current_module_row_id,
+            "module_open": self._module_open,
+            "current_plan": plan_state(self.current_plan) if self._module_open else None,
+            "pending_break": pending,
+            "used_ids": sorted(self.used_ids),
+            "fixed_modules": [[s, m, t, [q.question_id for q in qs]]
+                              for (s, m, t), qs in self.fixed_modules.items()],
+            "started_at": self.started_at,
+            # Pauses already over, plus when the current one began. restore()
+            # needs the start, not a running total: the app can be closed for
+            # a day between this snapshot and the next time anyone reads it.
+            "paused_seconds": self.paused_seconds,
+            "paused_at": self._paused_at,
+            "saved_epoch": time.time(),
+        }
+
+    @classmethod
+    def restore(cls, state: dict) -> "TestRunner":
+        """
+        Rebuild a sitting from snapshot(), for example after the app restarted.
+
+        The runner comes back paused; call resume_clock() when the student is
+        actually back in front of it.
+        """
+        import question_repo
+        from models import Question
+
+        runner = cls.__new__(cls)
+        runner.mode = state["mode"]
+        runner.label = state.get("label") or cls._default_label(state["mode"], state.get("sections"))
+        runner.timed = bool(state.get("timed", True))
+        runner.threshold = float(state.get("threshold", DEFAULT_ROUTING_THRESHOLD))
+        runner.use_weighting = bool(state.get("use_weighting", True))
+        runner.rng = random.Random()
+        runner.sections = list(state.get("sections") or [])
+        runner.drill_questions = []
+        runner.drill_time_limit = state.get("drill_time_limit")
+        runner.session_id = int(state["session_id"])
+        runner.section_index = int(state.get("section_index") or 0)
+        runner.module_number = int(state.get("module_number") or 0)
+        runner.current_tier = state.get("current_tier") or TIER_BASELINE
+        runner.current_module_row_id = state.get("current_module_row_id")
+        runner.used_ids = set(state.get("used_ids") or [])
+        runner.started_at = float(state.get("started_at") or time.time())
+        runner.paused_seconds = float(state.get("paused_seconds") or 0.0)
+        # Paused since the pause began, or, for a sitting the app died in the
+        # middle of, since the last time it was saved.
+        runner._paused_at = float(state.get("paused_at") or state.get("saved_epoch") or time.time())
+        runner._finished = False
+        runner.seen = attempt_repo.seen_counts()
+
+        pending_state = state.get("pending_break") or None
+        wanted = []
+        for _s, _m, _t, ids in state.get("fixed_modules") or []:
+            wanted.extend(ids)
+        for plan in (state.get("current_plan"), (pending_state or {}).get("plan")):
+            if plan:
+                wanted.extend(plan.get("question_ids") or [])
+        bank = question_repo.fetch_by_ids(wanted)
+
+        def questions_for(ids, module_number, tier, section):
+            out = []
+            for position, qid in enumerate(ids, start=1):
+                question = bank.get(qid)
+                if question is None:
+                    # Gone from the bank since. Keep the slot, so the answers
+                    # saved against positions still line up with their questions.
+                    question = Question(question_id=qid, section=section, domain="General",
+                                        skill="General", difficulty="Medium", question_img=None,
+                                        correct_answer="", rationale=None, is_open_ended=False)
+                else:
+                    # fetch_by_ids hands out one object per id; a question that
+                    # sits in two stored modules must not share its position.
+                    question = replace(question)
+                question.module_number, question.tier, question.position = module_number, tier, position
+                out.append(question)
+            return out
+
+        def plan_from(data):
+            if not data:
+                return None
+            questions = questions_for(data.get("question_ids") or [], data["module_number"],
+                                      data["tier"], data["section"])
+            return engine.ModulePlan(
+                section=data["section"], module_number=data["module_number"], tier=data["tier"],
+                questions=questions, time_limit_seconds=int(data.get("time_limit_seconds") or 0),
+                target_count=int(data.get("target_count") or len(questions)),
+                domain_gaps=data.get("domain_gaps") or {},
+                difficulty_actual=data.get("difficulty_actual") or {},
+                difficulty_target=data.get("difficulty_target") or {},
+                skill_gaps=data.get("skill_gaps") or {})
+
+        runner.fixed_modules = {(s, m, t): questions_for(ids, m, t, s)
+                                for s, m, t, ids in state.get("fixed_modules") or []}
+        runner.current_plan = plan_from(state.get("current_plan"))
+        runner._module_open = bool(state.get("module_open")) and runner.current_plan is not None
+
+        runner._pending_break = None
+        if pending_state:
+            info = dict(pending_state)
+            info["plan"] = plan_from(pending_state.get("plan"))
+            result = pending_state.get("result")
+            info["result"] = engine.ModuleResult(**result) if result else None
+            runner._pending_break = info
+
+        # The modules already handed in, rebuilt from the answers on record.
+        # The open module has a row in `modules` but no answers yet, so it is
+        # left out; the section being sat gets its outcome back, empty if this
+        # is its first module.
+        summary = summary_from_history(runner.session_id)
+        open_row = runner.current_module_row_id if runner._module_open else None
+        runner.outcomes = []
+        for outcome in (summary.sections if summary else []):
+            outcome.modules = [m for m in outcome.modules if m.module_row_id != open_row]
+            if outcome.modules:
+                runner.outcomes.append(outcome)
+        current = runner.current_plan.section if runner._module_open else None
+        if current and (not runner.outcomes or runner.outcomes[-1].section != current):
+            runner.outcomes.append(SectionOutcome(section=current))
+        runner.all_records = [r for o in runner.outcomes for r in o.records]
+        return runner
+
     def _finish(self) -> TestSummary:
         """Close the session and build the summary the review screen renders."""
-        duration = int(time.time() - self.started_at)
+        duration = self.active_seconds()
         summary = TestSummary(
             session_id=self.session_id,
             mode=self.mode,
@@ -452,6 +658,14 @@ def summary_from_history(session_id: int):
     session = attempt_repo.get_session(session_id)
     if not session:
         return None
+    # The routing line has to quote the threshold this sitting was actually
+    # routed with, not the default: a 75% test explained against 65% says
+    # "below the line" about a score that was above it.
+    try:
+        threshold = float(json.loads(session.get("config_json") or "{}")
+                          .get("threshold", DEFAULT_ROUTING_THRESHOLD))
+    except (TypeError, ValueError, AttributeError):
+        threshold = DEFAULT_ROUTING_THRESHOLD
 
     attempts = attempt_repo.get_session_attempts(session_id)
     modules = attempt_repo.get_session_modules(session_id)
@@ -512,7 +726,8 @@ def summary_from_history(session_id: int):
         outcome.records.extend(records)
         if module["module_number"] == 1 and module["routed_to"]:
             outcome.final_tier = module["routed_to"]
-            outcome.routing_note = engine.routing_explanation(result, module["routed_to"])
+            outcome.routing_note = engine.routing_explanation(result, module["routed_to"],
+                                                              threshold)
 
     # A session recorded before modules existed (migrated history) still works.
     if not outcomes and all_records:

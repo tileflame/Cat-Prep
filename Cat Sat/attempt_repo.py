@@ -37,7 +37,7 @@ def finish_session(
     estimated_score: int | None = None,
     status: str = "completed",
 ) -> None:
-    """Close a sitting out with its headline numbers."""
+    """Close a sitting out with its headline numbers. A closed sitting cannot be resumed."""
     with progress_conn() as conn:
         conn.execute(
             "UPDATE sessions SET finished_at = datetime('now','localtime'), status = ?, "
@@ -46,18 +46,76 @@ def finish_session(
             (status, total_questions, correct_count, duration_seconds,
              estimated_score, session_id),
         )
+        conn.execute("DELETE FROM paused_sittings WHERE session_id = ?", (session_id,))
 
 
 def abandon_stale_sessions() -> int:
     """
-    Mark any session left 'in_progress' (app closed mid-test) as abandoned.
-    Called at startup so the history list never shows phantom active tests.
+    Tidy up sittings left open by a previous run. Called at startup.
+
+    A sitting with a saved snapshot is not stale, it is paused: the app was
+    closed, or crashed, with it open, and it can be picked up again. Only the
+    newest one is kept (there is one Resume button). Everything else left
+    'in_progress' is marked abandoned, so History never shows phantom tests.
     """
     with progress_conn() as conn:
+        keep = conn.execute(
+            "SELECT p.session_id FROM paused_sittings p JOIN sessions s "
+            "ON s.session_id = p.session_id WHERE s.status IN ('in_progress', 'paused') "
+            "ORDER BY p.saved_at DESC, p.session_id DESC LIMIT 1").fetchone()
+        keep_id = keep[0] if keep else -1
+        conn.execute("UPDATE sessions SET status = 'paused' WHERE session_id = ?", (keep_id,))
         cur = conn.execute(
-            "UPDATE sessions SET status = 'abandoned' WHERE status = 'in_progress'"
-        )
+            "UPDATE sessions SET status = 'abandoned' "
+            "WHERE status IN ('in_progress', 'paused') AND session_id != ?", (keep_id,))
+        conn.execute("DELETE FROM paused_sittings WHERE session_id != ?", (keep_id,))
         return cur.rowcount or 0
+
+
+# ---------------------------------------------------------------------------
+# PAUSED SITTINGS
+# ---------------------------------------------------------------------------
+
+def save_snapshot(session_id: int, state: dict) -> None:
+    with progress_conn() as conn:
+        conn.execute(
+            "INSERT INTO paused_sittings (session_id, state_json, saved_at) "
+            "VALUES (?, ?, datetime('now','localtime')) "
+            "ON CONFLICT(session_id) DO UPDATE SET state_json = excluded.state_json, "
+            "saved_at = excluded.saved_at",
+            (session_id, json.dumps(state)))
+
+
+def load_snapshot(session_id: int | None = None) -> dict | None:
+    """The saved state of one sitting, or of the newest resumable one."""
+    if session_id is None:
+        rows = _query(
+            "SELECT p.state_json, p.saved_at FROM paused_sittings p JOIN sessions s "
+            "ON s.session_id = p.session_id WHERE s.status IN ('in_progress', 'paused') "
+            "ORDER BY p.saved_at DESC, p.session_id DESC LIMIT 1")
+    else:
+        rows = _query("SELECT state_json, saved_at FROM paused_sittings WHERE session_id = ?",
+                      (session_id,))
+    if not rows:
+        return None
+    try:
+        state = json.loads(rows[0]["state_json"])
+    except (TypeError, ValueError):
+        return None
+    if not isinstance(state, dict):
+        return None
+    state["saved_at"] = rows[0]["saved_at"]
+    return state
+
+
+def delete_snapshot(session_id: int) -> None:
+    with progress_conn() as conn:
+        conn.execute("DELETE FROM paused_sittings WHERE session_id = ?", (session_id,))
+
+
+def set_session_status(session_id: int, status: str) -> None:
+    with progress_conn() as conn:
+        conn.execute("UPDATE sessions SET status = ? WHERE session_id = ?", (status, session_id))
 
 
 # ---------------------------------------------------------------------------
@@ -89,6 +147,15 @@ def finish_module(
             (correct_count, raw_accuracy, weighted_accuracy, routed_to,
              time_used_seconds, module_row_id),
         )
+
+
+def get_module(module_row_id: int) -> dict | None:
+    rows = _query("SELECT * FROM modules WHERE module_row_id = ?", (module_row_id,))
+    return dict(rows[0]) if rows else None
+
+
+def module_has_attempts(module_row_id: int) -> bool:
+    return bool(_query("SELECT 1 FROM attempts WHERE module_row_id = ? LIMIT 1", (module_row_id,)))
 
 
 # ---------------------------------------------------------------------------
@@ -218,6 +285,7 @@ def delete_session(session_id: int) -> None:
     with progress_conn() as conn:
         conn.execute("DELETE FROM attempts WHERE session_id = ?", (session_id,))
         conn.execute("DELETE FROM modules WHERE session_id = ?", (session_id,))
+        conn.execute("DELETE FROM paused_sittings WHERE session_id = ?", (session_id,))
         conn.execute("DELETE FROM sessions WHERE session_id = ?", (session_id,))
 
 
@@ -332,10 +400,15 @@ def seen_counts(section: str | None = None) -> dict[str, int]:
 
 def question_ids_where(*, only_incorrect=False, only_flagged=False,
                        section=None, domain=None, since_days: int | None = None,
-                       limit: int = 500) -> list[str]:
+                       limit: int = 500, domains=None, difficulty=None) -> list[str]:
     """
     Build a targeted pool: missed questions, flagged questions, or both.
     Returns most-recent-first, de-duplicated.
+
+    `domains` and `difficulty` are applied here, before the LIMIT. Filtering
+    after it in Python asked for 40 recent misses and then threw away every one
+    that was not Hard Geometry, so "10 of my Hard Geometry mistakes" came back
+    with 4 when there were 144.
     """
     clauses, params = ["1=1"], []
     if only_incorrect and only_flagged:
@@ -350,6 +423,13 @@ def question_ids_where(*, only_incorrect=False, only_flagged=False,
     if domain and domain != "Any":
         clauses.append("domain = ?")
         params.append(domain)
+    wanted = [d for d in (domains or []) if d and d != "Any"]
+    if wanted:
+        clauses.append(f"domain IN ({','.join('?' for _ in wanted)})")
+        params.extend(wanted)
+    if difficulty:
+        clauses.append("difficulty = ?")
+        params.append(difficulty)
     if since_days:
         clauses.append("answered_at >= datetime('now','localtime', ?)")
         params.append(f"-{int(since_days)} days")
@@ -458,6 +538,7 @@ def clear_history(*, keep_notes: bool = True) -> None:
     with progress_conn() as conn:
         conn.execute("DELETE FROM attempts")
         conn.execute("DELETE FROM modules")
+        conn.execute("DELETE FROM paused_sittings")
         conn.execute("DELETE FROM sessions")
         conn.execute("DELETE FROM redo_queue")
         conn.execute("DELETE FROM drill_targets")
@@ -506,6 +587,11 @@ def logged_attempts(session_id: int) -> list[dict]:
         (session_id,),
     )
     return [dict(r) for r in rows]
+
+
+def get_attempt(attempt_id: int) -> dict | None:
+    rows = _query("SELECT * FROM attempts WHERE attempt_id = ?", (attempt_id,))
+    return dict(rows[0]) if rows else None
 
 
 def recent_logged(limit: int = 120) -> list[dict]:
@@ -657,6 +743,25 @@ def complete_redo(question_id: str, *, was_correct: bool, next_stage_value,
                  row["skill"] if row else "", next_stage_value, next_due))
 
 
+def retire_missing_redos(question_ids) -> int:
+    """
+    Close redos whose question the bank can no longer serve.
+
+    They were never completed, and being the oldest they always filled the
+    LIMIT of the next redo session, so it came back empty ("no longer in the
+    bank") every time while the pill kept counting them as due.
+    """
+    ids = [str(q) for q in question_ids if q]
+    if not ids:
+        return 0
+    with progress_conn() as conn:
+        cur = conn.execute(
+            "UPDATE redo_queue SET completed_at = datetime('now','localtime'), "
+            f"last_result = 'missing' WHERE completed_at IS NULL AND question_id IN "
+            f"({','.join('?' for _ in ids)})", tuple(ids))
+        return cur.rowcount or 0
+
+
 def clear_redo_queue() -> None:
     with progress_conn() as conn:
         conn.execute("DELETE FROM redo_queue")
@@ -743,10 +848,16 @@ def attempts_per_day(start_key: str, end_key: str) -> dict:
     return {r["d"]: r["n"] for r in rows}
 
 
-def plan_streak(today_key: str, lookback: int = 30) -> int:
-    """Consecutive days ending today with at least one task ticked off."""
-    rows = _query("SELECT DISTINCT day_key FROM plan_progress WHERE done = 1 "
-                  "ORDER BY day_key DESC LIMIT ?", (lookback,))
+def plan_streak(today_key: str, lookback: int = 400) -> int:
+    """
+    Consecutive days ending today with at least one task ticked off.
+
+    Only days on or before today count, and the look-back is a year, not the
+    30 most recent ticked days: a 45-day streak used to show 30, and ticking
+    ahead on future days pushed real past days out of the window.
+    """
+    rows = _query("SELECT DISTINCT day_key FROM plan_progress WHERE done = 1 AND day_key <= ? "
+                  "ORDER BY day_key DESC LIMIT ?", (today_key, lookback))
     from datetime import date as _date, timedelta as _td
     done_days = {r["day_key"] for r in rows}
     try:

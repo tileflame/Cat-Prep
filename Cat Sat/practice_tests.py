@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import json
 import random
+import threading
 
 import adaptive_engine as engine
 import attempt_repo
@@ -243,6 +244,12 @@ def _save(number: int, modules: dict, gaps: int, drift: int) -> None:
             "difficulty_drift) VALUES (?, ?, ?)", (number, gaps, drift))
 
 
+#: One build at a time. Two at once (the Test tab opened twice while the first
+#: was still going) both picked the same next test number and the second one
+#: crashed on the table's primary key.
+_BUILD_LOCK = threading.Lock()
+
+
 def build_more(max_new: int | None = None) -> dict:
     """
     Append as many new numbered tests as the unused part of the bank allows.
@@ -250,6 +257,11 @@ def build_more(max_new: int | None = None) -> dict:
     Existing tests are never touched. Returns how many were added, how many
     there are now, and in plain words why it stopped.
     """
+    with _BUILD_LOCK:
+        return _build_more(max_new)
+
+
+def _build_more(max_new: int | None = None) -> dict:
     existing = stored_numbers()
     used = used_question_ids()
     seen = attempt_repo.seen_counts()

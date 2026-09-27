@@ -162,6 +162,33 @@ def close_all_pools() -> None:
     gc.collect()
 
 
+def release_thread_pool() -> None:
+    """
+    Close this thread's connections AND forget its pool. Call it as a thread ends.
+
+    The server runs one thread per browser connection, and every one of them
+    opened its own pair of SQLite connections. _ALL_POOLS held on to each
+    thread's pool after the thread was gone, so none of those connections was
+    ever closed: every new browser connection kept roughly 5 MB and four file
+    handles for as long as the app stayed open. A day of studying meant
+    hundreds of dead connections, which is lag first and "unable to open
+    database file" at the end.
+    """
+    pool = getattr(_LOCAL, "pool", None)
+    if pool is None:
+        return
+    for conn, _identity in list(pool.values()):
+        try:
+            conn.close()
+        except sqlite3.Error:
+            pass
+    pool.clear()
+    with _POOLS_LOCK:
+        # By identity: every emptied pool is == every other empty dict.
+        _ALL_POOLS[:] = [p for p in _ALL_POOLS if p is not pool]
+    _LOCAL.pool = None
+
+
 def reset_pool() -> None:
     """Force the next access to reconnect. Used after a bulk import or wipe."""
     close_pool()
@@ -424,6 +451,16 @@ CREATE TABLE IF NOT EXISTS practice_test_meta (
     difficulty_drift INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS idx_practice_question ON practice_tests(question_id);
+
+-- A sitting you stepped away from, kept so you can pick it up again, even
+-- after closing the app. state_json is everything needed to rebuild it: the
+-- modules and where you were in them, your answers so far on the open module,
+-- and the time left on its clock. One live row at most.
+CREATE TABLE IF NOT EXISTS paused_sittings (
+    session_id      INTEGER PRIMARY KEY,
+    state_json      TEXT NOT NULL,
+    saved_at        TEXT NOT NULL DEFAULT (datetime('now','localtime'))
+);
 
 CREATE INDEX IF NOT EXISTS idx_redo_due       ON redo_queue(due_on, completed_at);
 CREATE INDEX IF NOT EXISTS idx_redo_question  ON redo_queue(question_id);

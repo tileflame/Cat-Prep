@@ -352,7 +352,11 @@ def build_days(profile: Profile, weeks: list[dict], today: date) -> dict[date, d
     if not weeks:
         return {}
 
-    tests = {t["date"]: t for t in profile.upcoming_tests(today)}
+    # From YESTERDAY, not today. The morning after the exam, the test is no
+    # longer "upcoming", so counting from today meant the brain-dump day never
+    # appeared on the one day it exists for: it only showed when you looked
+    # ahead at it beforehand.
+    tests = {t["date"]: t for t in profile.upcoming_tests(today - timedelta(days=1))}
     days: dict[date, dict] = {}
 
     for week in weeks:
@@ -396,8 +400,11 @@ def build_days(profile: Profile, weeks: list[dict], today: date) -> dict[date, d
                     ],
                 }
             elif day.weekday() == 6:                       # Sunday
+                # No week number in the headline: the tile and the week card
+                # right above it already say which week this is, and a day you
+                # go back to later sits in a week with a different number.
                 days[day] = {
-                    "headline": f"Week {week['number']}, Sunday re-plan",
+                    "headline": "Sunday re-plan",
                     "hours": "~45 min",
                     "tasks": [
                         _review(30, "Weekly diagnosis",
@@ -489,3 +496,56 @@ def clear_plan_cache() -> None:
     """Drop the cached plan. Called after the profile is written."""
     _CACHE["key"] = None
     _CACHE["plan"] = None
+    _PAST["key"] = None
+    _PAST["days"] = {}
+
+
+# Days that have already gone by.
+#
+# The plan is built forward from today, so yesterday was not in it: going back
+# a day on the Plan screen said "Outside your planned window" with nothing to
+# tick. That is exactly the day you most need to see, the one you missed. So a
+# past day gets build_plan with THAT day as "today". It keeps the shape it had
+# then (the week it fell in, the eve of a test that has since happened, the
+# brain dump after it), with your current scores choosing the focus. Today and
+# everything after it are unaffected: this is only asked about days the live
+# plan does not contain.
+_PAST: dict = {"key": None, "days": {}}
+
+#: How far back the Plan screen and the calendar will reconstruct a day.
+PAST_DAYS = 60
+
+
+def day_plan_as_of(day: date) -> dict | None:
+    """The plan for a day already gone by. None if there is not one."""
+    today = date.today()
+    if not (today - timedelta(days=PAST_DAYS) <= day < today):
+        return None
+    key = _profile_fingerprint()
+    if _PAST["key"] != key:
+        _PAST["key"], _PAST["days"] = key, {}
+    if day in _PAST["days"]:
+        return _PAST["days"][day]
+    me = Profile.load()
+    found = None
+    if me is not None and me.test_dates:
+        found = build_plan(me, day)["days"].get(day)
+        if found is not None:
+            # Week numbers count from THIS week, which is week 0 on the live
+            # plan. Rebuilt from an earlier day, last week would call itself
+            # week 0 as well, so renumber: last week is -1, the one before -2.
+            week = found.get("week")
+            if week:
+                this_week = _week_bounds(today)[0]
+                week = dict(week, number=(week["start"] - this_week).days // 7)
+            found = dict(found, week=week, past=True)
+    _PAST["days"][day] = found
+    return found
+
+
+def tests_as_of(day: date) -> list[dict] | None:
+    """Every test on or after `day`, including ones since sat. None without a profile."""
+    me = Profile.load()
+    if me is None or not me.test_dates:
+        return None
+    return sorted(me.upcoming_tests(day), key=lambda t: t["date"])

@@ -137,8 +137,12 @@ def saved_profile() -> dict:
 
 #: Bumped by hand on each release. Shown in the app so a bug report can say
 #: which build it came from, which is always the first question.
-VERSION = "1.5"
+VERSION = "1.6"
 RELEASES_URL = "https://github.com/tileflame/Cat-Prep/releases"
+
+
+_BACKUP_LOCK = threading.Lock()
+ALREADY_COMPRESSED = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".pdf", ".zip"}
 
 
 def make_backup() -> dict:
@@ -157,6 +161,10 @@ def make_backup() -> dict:
     target_dir = desktop if desktop.is_dir() else Path.home()
     target = target_dir / f"CatPrep-backup-{stamp}.zip"
 
+    # One at a time: a second click used to start a second zip writing into
+    # the same .part file as the first.
+    if not _BACKUP_LOCK.acquire(blocking=False):
+        return {"error": "A backup is already being made. It will say so here when it is done."}
     try:
         count = 0
         # Write to .part first: a backup half-written over yesterday's good one
@@ -169,7 +177,12 @@ def make_backup() -> dict:
                     continue
                 for item in root.rglob("*"):
                     if item.is_file() and item.name != ".gitkeep":
-                        bundle.write(item, str(Path(folder) / item.relative_to(root)))
+                        # PNGs and PDFs are compressed already. Deflating them
+                        # again took most of the backup's time and saved almost
+                        # nothing; they are stored as they are.
+                        stored = item.suffix.lower() in ALREADY_COMPRESSED
+                        bundle.write(item, str(Path(folder) / item.relative_to(root)),
+                                     compress_type=zipfile.ZIP_STORED if stored else zipfile.ZIP_DEFLATED)
                         count += 1
         os.replace(part, target)
         size = target.stat().st_size
@@ -177,6 +190,8 @@ def make_backup() -> dict:
                 "sizeMB": round(size / 1e6, 1)}
     except OSError as exc:
         return {"error": f"Could not write the backup: {exc}"}
+    finally:
+        _BACKUP_LOCK.release()
 
 
 def environment() -> dict:

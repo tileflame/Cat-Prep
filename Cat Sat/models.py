@@ -299,11 +299,16 @@ def answers_match(user_answer, correct_answer, is_open_ended: bool = False) -> b
 
 def _decimal_equivalent(user_text: str, exact: Fraction) -> bool:
     """Accept a correctly truncated or rounded 4-character decimal entry."""
+    # A real grid-in holds five characters. Anything this long is not an answer,
+    # and "1e400" used to raise OverflowError here, which failed the whole
+    # module's submit and lost every answer in it.
+    if len(user_text) > 32:
+        return False
     try:
         user_value = float(Fraction(user_text))
-    except (ValueError, ZeroDivisionError):
+        exact_value = float(exact)
+    except (ValueError, ZeroDivisionError, OverflowError):
         return False
-    exact_value = float(exact)
     if exact_value == 0:
         return abs(user_value) < 1e-9
     # Grid-ins allow ~3-4 significant digits; 0.2% tolerance covers truncation.

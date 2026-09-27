@@ -12,8 +12,12 @@ local app, so a module-level controller is the right amount of machinery.
 
 from __future__ import annotations
 
+import functools
+import json
 import random
+import threading
 import time
+import traceback
 from datetime import date, timedelta
 
 import adaptive_engine as engine
@@ -215,6 +219,75 @@ def engine_cache_bust() -> None:
         pass
 
 
+def _sitting(method):
+    """
+    Run a method that touches the sitting in progress under the Api's lock.
+
+    The server answers every browser connection on its own thread, and the
+    browser happily sends two requests at once: a double-clicked Continue, an
+    autosave crossing a Submit. Without a lock, two threads read and replace
+    self.runner at the same time.
+    """
+    @functools.wraps(method)
+    def locked(self, *args, **kwargs):
+        with self._lock:
+            return method(self, *args, **kwargs)
+    return locked
+
+
+_KEEP = object()
+#: The most a browser may store as its in-progress answers. A 27-question module
+#: is a couple of kilobytes; anything near this is not a module.
+MAX_CLIENT_STATE_BYTES = 256_000
+
+
+def _clean_client_state(state):
+    """The browser's in-progress answers, if they look like answers. Else None."""
+    if not isinstance(state, dict):
+        return None
+    try:
+        size = len(json.dumps(state))
+    except (TypeError, ValueError):
+        return None
+    return state if size <= MAX_CLIENT_STATE_BYTES else None
+
+
+def _paused_json(state: dict, client, *, active: bool = False) -> dict | None:
+    """What the Resume button says about a sitting you stepped away from."""
+    plan = state.get("current_plan")
+    pending = state.get("pending_break")
+    client = client if isinstance(client, dict) else {}
+    remaining = None
+    if state.get("module_open") and plan:
+        total = len(plan.get("question_ids") or [])
+        single = state.get("mode") in SINGLE_MODULE_MODES
+        where = (state.get("label") if single
+                 else f"{plan.get('section')}, Module {plan.get('module_number')}")
+        try:
+            index = int(client.get("index") or 0)
+        except (TypeError, ValueError):
+            index = 0
+        answers = client.get("answers") if isinstance(client.get("answers"), dict) else {}
+        answered = sum(1 for v in answers.values() if str(v or "").strip())
+        progress = f"Question {min(index + 1, max(total, 1))} of {total} · {answered} answered"
+        if state.get("timed") and plan.get("time_limit_seconds"):
+            remaining = client.get("remaining")
+            if not isinstance(remaining, (int, float)):
+                remaining = plan.get("time_limit_seconds")
+        phase = "module"
+    elif pending:
+        where = f"At the break. Next: {pending.get('next_label') or 'the next module'}"
+        progress = ""
+        phase = "break"
+    else:
+        return None
+    return {"sessionId": state.get("session_id"), "label": state.get("label") or "Practice",
+            "where": where, "progress": progress,
+            "remaining": int(remaining) if remaining is not None else None,
+            "phase": phase, "mode": state.get("mode"), "savedAt": state.get("saved_at"),
+            "active": active}
+
+
 class Api:
     """Holds the sitting in progress. One instance per running server."""
 
@@ -226,6 +299,15 @@ class Api:
         self._is_redo = False
         self._image_paths: dict[str, tuple] = {}
         self._pending_break = None
+        self._lock = threading.RLock()
+        # Pause and resume: whether the sitting in memory is paused, the
+        # browser's latest answers on its open module, and the reply to the
+        # last module handed in (so a repeated Submit gets the same answer
+        # instead of a second grading).
+        self.paused = False
+        self._client_state = None
+        self._last_submitted = None
+        self._last_reply = None
 
     # ------------------------------------------------------------- bootstrap
 
@@ -255,6 +337,7 @@ class Api:
             "untagged": attempt_repo.untagged_count(),
             "sections": question_repo.list_sections(),
             "hasSession": self.runner is not None,
+            "paused": self.paused_info(),
         }
 
     def save_setting(self, key: str, value) -> dict:
@@ -433,6 +516,7 @@ class Api:
 
     # --------------------------------------------------------------- sittings
 
+    @_sitting
     def start_test(self, *, mode: str, sections: list, timed: bool = True,
                    threshold: float = DEFAULT_ROUTING_THRESHOLD,
                    weighted: bool = True) -> dict:
@@ -485,6 +569,7 @@ class Api:
         result["skills"] = self.skill_status()
         return result
 
+    @_sitting
     def start_practice_test(self, *, number: int, sections: list | None = None,
                             timed: bool = True,
                             threshold: float = DEFAULT_ROUTING_THRESHOLD,
@@ -511,6 +596,7 @@ class Api:
 
     # ------------------------------------------------------------- check mode
 
+    @_sitting
     def start_check(self, *, section: str, domains: list | None = None,
                     count: int = 10, difficulty: str | None = None,
                     ramp: bool = True) -> dict:
@@ -533,10 +619,11 @@ class Api:
             config_snapshot={"section": section, "domains": domains or [],
                              "count": count, "difficulty": difficulty, "ramp": ramp},
             rng=self.rng)
-        result = self._begin(runner)
+        result = self._begin(runner, per_question=True)
         result["perQuestionTimer"] = True
         return result
 
+    @_sitting
     def check_answer(self, index: int, answer: str) -> dict:
         """
         Grade ONE question of the sitting in progress, and hand back the key.
@@ -545,6 +632,10 @@ class Api:
         server until the module is submitted, and this refuses rather than
         becoming a way to read a test's answers one at a time.
         """
+        if self.runner is None:
+            self._restore_saved()        # the app restarted with this window still open
+        if self.runner is not None and self.runner.module_open:
+            self.current_plan = self.runner.current_plan
         if self.runner is None or self.current_plan is None:
             return {"error": "No sitting in progress."}
         if self.runner.mode != MODE_CHECK:
@@ -565,6 +656,7 @@ class Api:
             if not question.has_rationale else "",
         }
 
+    @_sitting
     def start_drill(self, *, section: str, domains: list, count: int,
                     difficulty: str | None = None, ramp: bool = True,
                     timer: str = "Per-question stopwatch", source: str = "fresh") -> dict:
@@ -575,9 +667,12 @@ class Api:
             ids = attempt_repo.question_ids_where(
                 only_incorrect=source in ("missed", "both"),
                 only_flagged=source in ("flagged", "both"),
-                section=section, limit=count * 4)
+                section=section, domains=domains or [], difficulty=difficulty or None,
+                limit=count * 4)
             bank = question_repo.fetch_by_ids(ids)
             questions = [bank[qid] for qid in ids if qid in bank]
+            # Still checked against the bank's own labels: an answer keeps the
+            # domain it had when it was saved, and a question can move since.
             if difficulty:
                 questions = [q for q in questions if q.difficulty == difficulty]
             if domains:
@@ -612,23 +707,33 @@ class Api:
                              "difficulty": difficulty, "ramp": ramp, "timer": timer,
                              "source": source},
             rng=self.rng)
-        result = self._begin(runner)
+        result = self._begin(runner, per_question=timer == "Per-question stopwatch")
         result["perQuestionTimer"] = timer == "Per-question stopwatch"
         return result
 
+    @_sitting
     def start_redo(self, limit: int = 10) -> dict:
         today = date.today()
-        due = attempt_repo.due_redos(today.isoformat(), limit=limit)
+        # Ask for more than needed: a redo whose question the bank can no longer
+        # serve is closed here and the next one due takes its place, instead of
+        # the oldest dead entries filling every session.
+        due = attempt_repo.due_redos(today.isoformat(), limit=limit * 4 + 20)
+        if due:
+            bank = question_repo.fetch_by_ids([d["question_id"] for d in due])
+            gone = [d["question_id"] for d in due if d["question_id"] not in bank]
+            if gone:
+                attempt_repo.retire_missing_redos(gone)
+            due = [d for d in due if d["question_id"] in bank][:limit]
         if due:
             ids = [d["question_id"] for d in due]
-            self._redo_stages = {d["question_id"]: d["stage"] for d in due}
+            stages = {d["question_id"]: d["stage"] for d in due}
             label = f"Cold redo, {len(ids)} due"
         else:
             mastered = attempt_repo.mastered_question_ids(streak=2)
             ids = [q for q in attempt_repo.question_ids_where(
                 only_incorrect=True, only_flagged=True, limit=limit * 3)
                 if q not in mastered][:limit]
-            self._redo_stages = {}
+            stages = {}
             label = f"Warm-up redo, {len(ids)} recent miss(es)"
 
         if not ids:
@@ -643,11 +748,11 @@ class Api:
 
         runner = TestRunner(MODE_REVIEW, sections=[questions[0].section], label=label,
                             timed=False, drill_questions=questions, rng=self.rng)
-        self._is_redo = True
-        result = self._begin(runner)
+        result = self._begin(runner, redo=True, stages=stages, per_question=True)
         result["perQuestionTimer"] = True
         return result
 
+    @_sitting
     def start_review_pool(self, question_ids: list, label="Review session") -> dict:
         bank = question_repo.fetch_by_ids(question_ids)
         questions = [bank[qid] for qid in question_ids if qid in bank]
@@ -657,23 +762,233 @@ class Api:
             q.position, q.module_number = index, 1
         runner = TestRunner(MODE_REVIEW, sections=[questions[0].section], label=label,
                             timed=False, drill_questions=questions, rng=self.rng)
-        result = self._begin(runner)
+        result = self._begin(runner, per_question=True)
         result["perQuestionTimer"] = True
         return result
 
-    def _begin(self, runner) -> dict:
+    def _begin(self, runner, *, redo: bool = False, stages: dict | None = None,
+               per_question: bool = False) -> dict:
         step, payload = runner.start()
         if step == test_flow.STEP_DONE:
             attempt_repo.delete_session(runner.session_id)
-            self._is_redo = False
             return {"error": "Couldn't build that, the bank has no matching questions."}
+        # One sitting at a time. Starting a new one ends whatever was paused or
+        # still open (its handed-in modules stay in History), but only once the
+        # new one has actually been built: a start that fails ends nothing.
+        self._end_other_sittings(keep=runner.session_id)
         self.runner = runner
+        self.paused = False
+        self._client_state = None
+        self._last_submitted = None
+        self._last_reply = None
+        self._is_redo = redo
+        self._redo_stages = dict(stages or {})
+        self._per_question = per_question
         return self._step_json(step, payload)
 
+    def _end_other_sittings(self, keep=None) -> None:
+        """Close every sitting but `keep`: the one in memory and any saved one."""
+        if self.runner is not None and self.runner.session_id != keep:
+            try:
+                self.runner.abandon()
+            except Exception:                                 # noqa: BLE001
+                traceback.print_exc()
+            self._clear_sitting()
+        for _ in range(5):
+            state = attempt_repo.load_snapshot()
+            if not state or state.get("session_id") == keep:
+                return
+            self._close_saved(state)
+
+    def _close_saved(self, state: dict) -> None:
+        """Mark a saved sitting abandoned, with the totals of what was handed in."""
+        session_id = state.get("session_id")
+        try:
+            TestRunner.restore(state).abandon()
+        except Exception:                                     # noqa: BLE001
+            traceback.print_exc()
+            if session_id is not None:
+                attempt_repo.set_session_status(session_id, "abandoned")
+        if session_id is not None:
+            attempt_repo.delete_snapshot(session_id)
+
+    def _clear_sitting(self) -> None:
+        self.runner = None
+        self.current_plan = None
+        self.paused = False
+        self._client_state = None
+        self._is_redo = False
+        self._redo_stages = {}
+
+    # -------------------------------------------------------- pause and resume
+
+    def _persist(self, *, client=_KEEP) -> None:
+        """Write the sitting in memory to disk, so it survives the app closing."""
+        runner = self.runner
+        if runner is None or getattr(runner, "_finished", False):
+            return
+        if not runner.module_open and not runner.pending_break:
+            return                       # nothing to come back to: never save that
+        if client is not _KEEP:
+            self._client_state = client
+        try:
+            state = runner.snapshot()
+            state["api"] = {"is_redo": self._is_redo, "redo_stages": self._redo_stages,
+                            "per_question": getattr(self, "_per_question", False)}
+            state["client"] = self._client_state if runner.module_open else None
+            attempt_repo.save_snapshot(runner.session_id, state)
+        except Exception:                                     # noqa: BLE001
+            traceback.print_exc()        # a failed save must never break the sitting
+
+    def _same_module(self, module_id) -> bool:
+        runner = self.runner
+        if runner is None or not runner.module_open:
+            return False
+        try:
+            return module_id is not None and int(module_id) == int(runner.current_module_row_id)
+        except (TypeError, ValueError):
+            return False
+
+    @_sitting
+    def autosave(self, body: dict) -> dict:
+        """The browser's answers so far on the open module. Called every few seconds."""
+        if self.runner is None:
+            self._restore_saved()        # the app restarted with this window still open
+        if self.runner is None or not self._same_module(body.get("moduleId")):
+            return {"ok": False}
+        state = _clean_client_state(body.get("state"))
+        if state is None:
+            return {"ok": False}
+        if self.paused:
+            # Still being worked in (the app restarted under an open window):
+            # it is not paused, whatever the saved copy says.
+            self.runner.resume_clock()
+            self.paused = False
+            attempt_repo.set_session_status(self.runner.session_id, "in_progress")
+        self._persist(client=state)
+        return {"ok": True}
+
+    @_sitting
+    def pause(self, body: dict | None = None) -> dict:
+        """Step away from the sitting: save it, stop its clock, keep it for later."""
+        body = body or {}
+        if self.runner is None:
+            self._restore_saved()        # the app restarted with this window still open
+        runner = self.runner
+        if runner is None:
+            return {"ok": False, "paused": self.paused_info()}
+        state = _clean_client_state(body.get("state"))
+        if state is not None and self._same_module(body.get("moduleId")):
+            self._client_state = state
+        runner.pause_clock()
+        self.paused = True
+        self._persist()
+        attempt_repo.set_session_status(runner.session_id, "paused")
+        return {"ok": True, "paused": self.paused_info()}
+
+    @_sitting
+    def paused_info(self) -> dict | None:
+        """The sitting the Resume button would open, or None."""
+        if self.runner is not None:
+            try:
+                state = self.runner.snapshot()
+            except Exception:                                 # noqa: BLE001
+                return None
+            state["saved_at"] = None
+            client = self._client_state if self.runner.module_open else None
+            return _paused_json(state, client, active=not self.paused)
+        state = attempt_repo.load_snapshot()
+        if not state:
+            return None
+        return _paused_json(state, state.get("client"))
+
+    def _restore_saved(self) -> bool:
+        """Bring the saved sitting back into memory after a restart. True if it worked."""
+        state = attempt_repo.load_snapshot()
+        if not state:
+            return False
+        try:
+            runner = TestRunner.restore(state)
+        except Exception:                                     # noqa: BLE001
+            traceback.print_exc()
+            # A snapshot that cannot be rebuilt would sit behind the Resume
+            # button forever. Close it; what was handed in stays in History.
+            self._close_saved(state)
+            return False
+        self.runner = runner
+        self.current_plan = runner.current_plan if runner.module_open else None
+        self.paused = True
+        self._client_state = state.get("client") if runner.module_open else None
+        api_state = state.get("api") or {}
+        self._is_redo = bool(api_state.get("is_redo"))
+        self._redo_stages = dict(api_state.get("redo_stages") or {})
+        self._per_question = bool(api_state.get("per_question"))
+        self._last_submitted = None
+        self._last_reply = None
+        return True
+
+    @_sitting
+    def resume_paused(self) -> dict:
+        """Pick the sitting up where it was left: the same question, the same clock."""
+        if self.runner is None and not self._restore_saved():
+            return {"error": "There is no paused sitting to pick up."}
+        runner = self.runner
+        runner.resume_clock()
+        self.paused = False
+        attempt_repo.set_session_status(runner.session_id, "in_progress")
+        if runner.module_open and runner.current_plan is not None:
+            reply = self._step_json(test_flow.STEP_MODULE, runner.current_plan, persist=False)
+            reply["restore"] = self._client_state
+            reply["perQuestionTimer"] = getattr(self, "_per_question", False)
+        elif runner.pending_break:
+            reply = self._step_json(test_flow.STEP_BREAK, runner.pending_break, persist=False)
+        else:
+            self._close_saved(runner.snapshot())
+            self._clear_sitting()
+            return {"error": "That sitting had nothing left to sit."}
+        reply["resumed"] = True
+        return reply
+
+    @_sitting
+    def discard_paused(self) -> dict:
+        """End the paused sitting for good. What was handed in stays in History."""
+        if self.runner is not None:
+            try:
+                self.runner.abandon()
+            except Exception:                                 # noqa: BLE001
+                traceback.print_exc()
+            self._clear_sitting()
+        else:
+            state = attempt_repo.load_snapshot()
+            if state:
+                self._close_saved(state)
+        return {"ok": True}
+
+    # ------------------------------------------------------------------ steps
+
+    @_sitting
     def submit(self, payload: dict) -> dict:
         """Grade a module the browser just finished."""
-        if self.runner is None or self.current_plan is None:
+        module_id = payload.get("moduleId")
+        # The same module handed in twice (a double click, or a retry after a
+        # reply that got lost): answer exactly as the first time, grade nothing.
+        if (module_id is not None and self._last_reply is not None
+                and str(module_id) == str(self._last_submitted)):
+            return self._last_reply
+        if self.runner is None:
+            # The app was restarted with this module open. Its snapshot knows
+            # the sitting, so pick it back up rather than lose the module.
+            self._restore_saved()
+        runner = self.runner
+        if runner is None or not runner.module_open or runner.current_plan is None:
             return {"error": "No sitting in progress."}
+        if module_id is not None and not self._same_module(module_id):
+            return {"error": "That module was already handed in."}
+        if self.paused:
+            runner.resume_clock()
+            self.paused = False
+            attempt_repo.set_session_status(runner.session_id, "in_progress")
+        self.current_plan = runner.current_plan
 
         questions = self.current_plan.questions
         answers = payload.get("answers") or {}
@@ -701,31 +1016,50 @@ class Api:
         if self._is_redo:
             self._advance_redo(records)
 
-        step, result = self.runner.submit_module(records, elapsed)
-        return self._step_json(step, result)
+        submitted = runner.current_module_row_id
+        step, result = runner.submit_module(records, elapsed)
+        reply = self._step_json(step, result)
+        self._last_submitted = submitted
+        self._last_reply = reply
+        return reply
 
+    @_sitting
     def resume(self) -> dict:
-        if self.runner is None:
+        """Continue past a break screen."""
+        if self.runner is None and not self._restore_saved():
             return {"error": "No sitting in progress."}
+        if self.paused:
+            self.runner.resume_clock()
+            self.paused = False
+            attempt_repo.set_session_status(self.runner.session_id, "in_progress")
+        already_open = self.runner.module_open and not self.runner.pending_break
         step, payload = self.runner.resume()
+        if already_open and step == test_flow.STEP_MODULE:
+            # Continue clicked on a stale break screen: hand back the module
+            # that is already open, with its answers, and do not reset them.
+            reply = self._step_json(step, payload, persist=False)
+            reply["restore"] = self._client_state
+            return reply
         return self._step_json(step, payload)
 
+    @_sitting
     def abandon(self) -> dict:
         if self.runner is not None:
             self.runner.abandon()
-        self.runner = None
-        self.current_plan = None
-        self._is_redo = False
+        self._clear_sitting()
         return {"ok": True}
 
-    def _step_json(self, step, payload) -> dict:
+    def _step_json(self, step, payload, *, persist: bool = True) -> dict:
         if step == test_flow.STEP_MODULE:
             self.current_plan = payload
             self._cache_images(payload.questions)
             runner = self.runner
             context = (runner.label if runner and runner.mode in SINGLE_MODULE_MODES
                        else f"{payload.section}, Module {payload.module_number} of 2")
+            if persist:
+                self._persist(client=None)          # a fresh module: nothing answered yet
             return {"step": "module", "module": plan_json(payload),
+                    "moduleId": runner.current_module_row_id if runner else None,
                     "context": context,
                     "timed": bool(payload.time_limit_seconds) and bool(runner and runner.timed),
                     "mode": runner.mode if runner else ""}
@@ -733,6 +1067,8 @@ class Api:
         if step == test_flow.STEP_BREAK:
             info = payload
             result = info.get("result")
+            if persist:
+                self._persist(client=None)
             return {"step": "break", "break": {
                 "kind": info.get("kind"),
                 "heading": info.get("heading"),
@@ -749,9 +1085,7 @@ class Api:
                 },
             }}
 
-        self.runner = None
-        self.current_plan = None
-        self._is_redo = False
+        self._clear_sitting()
         return {"step": "done", "summary": summary_json(payload)}
 
     def _advance_redo(self, records):
@@ -853,9 +1187,10 @@ class Api:
                                  "tell whether you did it, it isn't a rule."}
         attempt_repo.tag_attempt(int(attempt_id), root_cause=root_cause, fix_note=fix_note)
 
-        # Schedule the cold redo once both axes are filled in.
-        row = next((r for r in attempt_repo.recent_logged(limit=300)
-                    if r["attempt_id"] == int(attempt_id)), None)
+        # Schedule the cold redo once both axes are filled in. Looked up by id:
+        # searching the 300 most recent misses meant tagging anything older
+        # than about a week of heavy use never scheduled its redo at all.
+        row = attempt_repo.get_attempt(int(attempt_id))
         scheduled = False
         if row and row.get("root_cause") and row.get("fix_note"):
             # Only schedule if this question is not ALREADY on the ladder.
@@ -894,11 +1229,18 @@ class Api:
                                      for t in session.get("tier_path", [])]
         return {"sessions": sessions}
 
+    @_sitting
     def delete_session(self, session_id: int) -> dict:
+        # Deleting the sitting that is paused (or open) deletes it for good:
+        # nothing may be left in memory to resume into a session that is gone.
+        if self.runner is not None and self.runner.session_id == int(session_id):
+            self._clear_sitting()
         attempt_repo.delete_session(int(session_id))
         return {"ok": True}
 
+    @_sitting
     def delete_all_history(self) -> dict:
+        self._clear_sitting()
         attempt_repo.clear_history(keep_notes=True)
         return {"ok": True}
 

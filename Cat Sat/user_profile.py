@@ -212,16 +212,30 @@ class Profile:
         are in the top band. Superscore means that score is kept forever, so
         every further minute spent there is a minute stolen from the section
         that can still move.
+
+        Judged SITTING BY SITTING. This used to take the best score (from any
+        sitting) and check it against the LATEST report's domain bands, which
+        mixes two different days. A real case: Math 760 in August with all four
+        domains in the top band, then Math 700 in September with one domain a
+        band lower. The superscore keeps the 760 for good, the September Math
+        changes nothing an admissions office will ever see, and yet the section
+        came un-banked and thirty percent of every study week went back onto it.
+        The question is whether any real sitting reached the banked level with
+        every domain of the section in the top band. If one did, the superscore
+        already holds that score and nothing later can take it away.
         """
-        best = self.best_sections()
-        domains = self.latest_domains()
+        pool = self.official_reports() or self.reports
         banked = set()
-        for section, members in ((RW, RW_DOMAINS), (MATH, MATH_DOMAINS)):
-            if best.get(section, 0) < BANKED_SCORE:
-                continue
-            bands = [domains.get(d) for d in members]
-            if bands and all(b and b["low"] >= TOP_BAND_LOW for b in bands):
-                banked.add(section)
+        for report in pool:
+            domains = report.get("domains") or {}
+            sections = report.get("sections") or {}
+            for section, members in ((RW, RW_DOMAINS), (MATH, MATH_DOMAINS)):
+                score = (sections.get(section) or {}).get("score") or 0
+                if score < BANKED_SCORE:
+                    continue
+                bands = [domains.get(d) for d in members]
+                if bands and all(b and b.get("low", 0) >= TOP_BAND_LOW for b in bands):
+                    banked.add(section)
         return banked
 
     def domain_priorities(self) -> list[dict]:

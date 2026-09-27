@@ -709,6 +709,361 @@ database.reset_pool()
 os.replace(_db + ".bak", _db)
 database.reset_pool()
 
+# ------------------------------------------ 15. PAST ANSWERS GET THEIR TYPE
+# Answers copy the question's skill when they are saved, so everything answered
+# before the types were read out of the PDFs sat under "General", and the
+# Skills panel was one giant General row.
+print("\n[15] past answers are filed under their question type")
+_qdb = os.path.join(make_fake_bank.SANDBOX, "database", "questions.db")
+_c = sqlite3.connect(_qdb)
+_typed = _c.execute("SELECT question_id, domain, skill FROM questions WHERE TRIM(COALESCE(skill, '')) "
+                    "NOT IN ('', 'General', 'Unclassified') ORDER BY question_id LIMIT 5").fetchall()
+_blank_q = _typed[4][0]
+_c.execute("UPDATE questions SET skill = '' WHERE question_id = ?", (_blank_q,))
+_c.commit(); _c.close()
+database.reset_pool()
+_p = sqlite3.connect(str(config.PROGRESS_DB))
+_ins = ("INSERT INTO attempts (question_id, section, domain, skill, difficulty, is_correct) "
+        "VALUES (?, 'Reading and Writing', ?, ?, 'Medium', 1)")
+_ids = {}
+for tag, qid, dom, skill in (("general", _typed[0][0], "Wrong Domain", "General"),
+                             ("general2", _typed[0][0], "Wrong Domain", "General"),
+                             ("empty", _typed[1][0], _typed[1][1], ""),
+                             ("null", _typed[2][0], _typed[2][1], None),
+                             ("kept", _typed[3][0], _typed[3][1], "Already Recorded"),
+                             ("unknowable", _blank_q, _typed[4][1], "General"),
+                             ("gone", "deadbeef", "Algebra", "General")):
+    _ids[tag] = _p.execute(_ins, (qid, dom, skill)).lastrowid
+_p.execute("INSERT INTO redo_queue (question_id, section, domain, skill, stage, due_on) "
+           "VALUES (?, 'Reading and Writing', 'Wrong Domain', 'General', 0, '2099-01-01')", (_typed[0][0],))
+_p.commit()
+try:
+    _filed = skill_tags.sync_attempt_skills()
+    _after = {tag: _p.execute("SELECT domain, skill FROM attempts WHERE attempt_id = ?",
+                              (aid,)).fetchone() for tag, aid in _ids.items()}
+    check("every blank answer whose question is known gets filed", _filed == 4, str(_filed))
+    check("'General' takes the question's skill AND domain",
+          _after["general"] == (_typed[0][1], _typed[0][2]) == _after["general2"], str(_after["general"]))
+    check("an empty skill is filled", _after["empty"][1] == _typed[1][2], str(_after["empty"]))
+    check("a NULL skill is filled", _after["null"][1] == _typed[2][2], str(_after["null"]))
+    check("a skill already recorded is never overwritten",
+          _after["kept"][1] == "Already Recorded", str(_after["kept"]))
+    check("a question with no known type leaves its answers alone",
+          _after["unknowable"][1] == "General" and _after["gone"][1] == "General",
+          str((_after["unknowable"], _after["gone"])))
+    _redo = _p.execute("SELECT domain, skill FROM redo_queue WHERE question_id = ? "
+                       "AND due_on = '2099-01-01'", (_typed[0][0],)).fetchone()
+    check("the redo queue is kept in step", _redo == (_typed[0][1], _typed[0][2]), str(_redo))
+    check("a second pass has nothing left to do", skill_tags.sync_attempt_skills() == 0)
+    database.reset_pool()
+    _buckets = {b["bucket"] for b in attempt_repo.breakdown("skill")}
+    check("the Skills panel shows the real type", _typed[0][2] in _buckets, str(sorted(_buckets)[:6]))
+finally:
+    _p.execute(f"DELETE FROM attempts WHERE attempt_id IN ({','.join('?' * len(_ids))})",
+               tuple(_ids.values()))
+    _p.execute("DELETE FROM redo_queue WHERE due_on = '2099-01-01'")
+    _p.commit(); _p.close()
+    _c = sqlite3.connect(_qdb)
+    _c.execute("UPDATE questions SET skill = ? WHERE question_id = ?", (_typed[4][2], _blank_q))
+    _c.commit(); _c.close()
+    database.reset_pool()
+
+# ------------------------------------------ 16. LEAVE A SITTING, COME BACK LATER
+# Clicking away used to abandon the sitting, and "Save and exit" on the break
+# screen abandoned it too, so a test could never be finished another day.
+print("\n[16] pause a sitting and pick it up again, even after a restart")
+import time as _time  # noqa: E402
+import test_flow  # noqa: E402
+attempt_repo.clear_history(keep_notes=False)
+pt.delete_all()
+pt.build_more()
+
+
+def _restart():
+    """What closing and reopening the app does to the sitting in memory."""
+    database.close_all_pools()
+    attempt_repo.abandon_stale_sessions()
+    return web_api.Api()
+
+
+api = web_api.Api()
+step = api.start_practice_test(number=1, sections=["Reading and Writing"])
+mid = step.get("moduleId")
+check("a module says which module it is", isinstance(mid, int), str(step.get("moduleId")))
+keys = [q.correct_answer for q in api.current_plan.questions]
+client = {"index": 6, "answers": {str(i): keys[i] for i in range(6)}, "flagged": [2],
+          "shaky": [3], "eliminated": {"1": ["C"]}, "times": {"0": 41000}, "remaining": 1234,
+          "elapsed": 686, "checked": {}}
+check("answers so far are autosaved", api.autosave({"moduleId": mid, "state": client}).get("ok"))
+check("an autosave for another module is ignored",
+      not api.autosave({"moduleId": mid + 999, "state": {"index": 0}}).get("ok"))
+paused = api.pause({"moduleId": mid, "state": client})
+check("leaving pauses instead of abandoning", paused.get("ok") and
+      attempt_repo.get_session(api.runner.session_id)["status"] == "paused",
+      str(paused)[:200])
+info = api.bootstrap()["paused"]
+check("the app knows what to offer back",
+      info and info["phase"] == "module" and info["remaining"] == 1234
+      and "Question 7 of 27" in info["progress"] and "6 answered" in info["progress"], str(info))
+sid = api.runner.session_id
+
+api = _restart()
+check("a restart keeps it paused, not abandoned",
+      attempt_repo.get_session(sid)["status"] == "paused")
+check("and still offers it", (api.bootstrap()["paused"] or {}).get("sessionId") == sid)
+back = api.resume_paused()
+check("resuming hands back the same module", back.get("step") == "module"
+      and back.get("moduleId") == mid
+      and [q["id"] for q in back["module"]["questions"]] == before, str(back)[:200])
+check("with every answer, flag and the clock where they were",
+      back.get("restore") == client, str(back.get("restore"))[:200])
+check("and it is in progress again", attempt_repo.get_session(sid)["status"] == "in_progress")
+step = api.submit({"moduleId": mid, "answers": {str(i): k for i, k in enumerate(keys)}, "elapsed": 900})
+check("the resumed module hands in and routes", step.get("step") == "break", str(step)[:200])
+again = api.submit({"moduleId": mid, "answers": {}, "elapsed": 1})
+check("handing the same module in twice changes nothing", again == step)
+check("and records its answers once",
+      len(attempt_repo.get_session_attempts(sid)) == 27, str(len(attempt_repo.get_session_attempts(sid))))
+
+# Save and exit on the break screen, then come back another day.
+api.pause({})
+api = _restart()
+info = api.bootstrap()["paused"]
+check("a sitting left at the break is offered back at the break",
+      info and info["phase"] == "break", str(info))
+back = api.resume_paused()
+check("resuming it lands on the break screen", back.get("step") == "break", str(back)[:200])
+first = api.resume()
+second = api.resume()
+check("a double-clicked Continue does not end the test",
+      first.get("step") == "module" and second.get("step") == "module"
+      and first.get("moduleId") == second.get("moduleId"), f"{first.get('step')} {second.get('step')}")
+check("the stored HARD Module 2 comes back after a restart",
+      [q["id"] for q in first["module"]["questions"]] == hard_ids)
+done = api.submit({"moduleId": first["moduleId"],
+                   "answers": {str(i): q.correct_answer for i, q in enumerate(api.current_plan.questions)},
+                   "elapsed": 60})
+check("and the sitting finishes with both modules", done.get("step") == "done"
+      and done["summary"]["total"] == 54, str(done)[:200])
+check("the snapshot is gone once it is finished", attempt_repo.load_snapshot(sid) is None)
+row = attempt_repo.get_session(sid)
+check("the time away is not counted as time spent", row["duration_seconds"] < 120,
+      str(row["duration_seconds"]))
+check("nothing is left to resume", api.bootstrap()["paused"] is None)
+
+# A crash: no pause call at all, just an autosave and then the app is gone.
+step = api.start_drill(section="Math", domains=[], count=6)
+did = step["moduleId"]
+api.autosave({"moduleId": did, "state": {"index": 3, "answers": {"0": "A"}}})
+dsid = api.runner.session_id
+api = _restart()
+check("a sitting open when the app died comes back as paused",
+      attempt_repo.get_session(dsid)["status"] == "paused")
+back = api.resume_paused()
+check("with its autosaved answers", (back.get("restore") or {}).get("answers") == {"0": "A"},
+      str(back)[:200])
+
+# Starting something new ends the paused one; its answers so far stay put.
+api.pause({"moduleId": did, "state": {"index": 3, "answers": {"0": "A"}}})
+new = api.start_check(section="Reading and Writing", count=4)
+check("starting a new sitting ends the paused one",
+      attempt_repo.get_session(dsid)["status"] == "abandoned"
+      and attempt_repo.load_snapshot(dsid) is None, str(attempt_repo.get_session(dsid)["status"]))
+check("and the new one is the one on offer if you leave it",
+      (api.pause({"moduleId": new["moduleId"], "state": {"index": 1}}).get("paused") or {})
+      .get("sessionId") == api.runner.session_id)
+check("End it closes the paused sitting", api.discard_paused().get("ok")
+      and api.bootstrap()["paused"] is None)
+
+# Check mode survives a restart and still checks.
+step = api.start_check(section="Math", count=4)
+api.pause({"moduleId": step["moduleId"], "state": {"index": 2, "checked": {"0": {"correct": True}}}})
+api = _restart()
+back = api.resume_paused()
+check("check mode comes back as check mode", back.get("mode") == "check", str(back)[:120])
+check("and still checks answers", "correct" in api.check_answer(1, "A"))
+api.abandon()
+
+# The runner round-trips through its own snapshot.
+runner = test_flow.TestRunner(test_flow.MODE_SECTION, sections=["Math"], timed=True)
+runner.start()
+snap = runner.snapshot()
+import json as _json  # noqa: E402
+twin = test_flow.TestRunner.restore(_json.loads(_json.dumps(snap)))
+check("a snapshot survives JSON and rebuilds the same module",
+      [q.question_id for q in twin.current_plan.questions]
+      == [q.question_id for q in runner.current_plan.questions]
+      and twin.current_module_row_id == runner.current_module_row_id and twin.module_open)
+runner.abandon()
+
+# Deleting the paused sitting from History leaves nothing to resume.
+api = web_api.Api()
+step = api.start_drill(section="Math", domains=[], count=3)
+api.pause({"moduleId": step["moduleId"], "state": {"index": 1}})
+api.delete_session(api.runner.session_id)
+check("deleting a paused sitting takes its Resume with it",
+      api.bootstrap()["paused"] is None and "error" in api.resume_paused())
+
+# Paused yesterday, back today: the day in between is not time spent.
+runner = test_flow.TestRunner(test_flow.MODE_SECTION, sections=["Reading and Writing"], timed=True)
+runner.start()
+runner.pause_clock()
+snap = _json.loads(_json.dumps(runner.snapshot()))
+snap["started_at"] -= 86_400
+snap["paused_at"] -= 86_400 - 120                     # sat for 2 minutes, then left
+snap["saved_epoch"] -= 86_400 - 120
+back = test_flow.TestRunner.restore(snap)
+back.resume_clock()
+check("a day away between pause and resume is not counted",
+      100 <= back.active_seconds() <= 140, str(back.active_seconds()))
+crashed = dict(snap, paused_at=None)                   # the app died instead of pausing
+check("nor is the time after a crash's last save",
+      100 <= test_flow.TestRunner.restore(crashed).active_seconds() <= 140)
+back.abandon()
+pt.delete_all()
+attempt_repo.clear_history(keep_notes=False)
+
+# ------------------------------------------ 18. SMALLER FIXES FROM THE REVIEW
+print("\n[18] the smaller fixes")
+from datetime import date as _date, timedelta as _td  # noqa: E402
+import threading as _threading  # noqa: E402
+attempt_repo.clear_history(keep_notes=False)
+api = web_api.Api()
+
+# A miss tagged long after it happened still schedules its redo.
+step = api.start_drill(section="Math", domains=[], count=4)
+api.submit({"moduleId": step["moduleId"], "answers": {}, "elapsed": 10})
+old_miss = attempt_repo.get_session_attempts(attempt_repo.list_sessions(limit=1)[0]["session_id"])[0]
+newer = 0
+for _ in range(12):                                  # 300+ newer misses bury it
+    if newer > 310:
+        break
+    s2 = api.start_drill(section="Reading and Writing", domains=[], count=80)
+    newer += len(s2["module"]["questions"])
+    api.submit({"moduleId": s2["moduleId"], "answers": {}, "elapsed": 10})
+check("the old miss really is buried under 300 newer ones", newer > 300, str(newer))
+api.tag(old_miss["attempt_id"], root_cause="C")
+tagged = api.tag(old_miss["attempt_id"], fix_note="Name the verb tense before reading the choices.")
+check("tagging an old miss still schedules its redo", tagged.get("scheduled") is True, str(tagged))
+
+# "10 of my Hard mistakes in one domain" comes back with 10 when there are 10.
+missed = attempt_repo.question_ids_where(only_incorrect=True, section="Reading and Writing",
+                                         difficulty="Hard", limit=500)
+bank_now = question_repo.fetch_by_ids(missed)
+by_domain = Counter(bank_now[q].domain for q in missed if q in bank_now)
+if by_domain:
+    wanted_domain, have = by_domain.most_common(1)[0]
+    drill = api.start_drill(section="Reading and Writing", domains=[wanted_domain], count=min(have, 10),
+                            difficulty="Hard", source="missed")
+    got = len(drill["module"]["questions"]) if drill.get("module") else 0
+    check("a mistakes drill filtered by domain and difficulty is not cut short",
+          got == min(have, 10), f"{got} of {min(have, 10)} ({wanted_domain})")
+    api.abandon()
+
+# Redos whose question is gone no longer block the queue.
+due_day = _date.today().isoformat()
+for qid in ("gone0001", "gone0002", "gone0003"):
+    attempt_repo.schedule_redo(qid, stage=0, due_on=due_day)
+redo = api.start_redo(limit=2)
+check("a redo session skips questions the bank no longer has",
+      redo.get("step") == "module" and len(redo["module"]["questions"]) >= 1, str(redo)[:160])
+check("and closes those dead entries",
+      not [r for r in attempt_repo.due_redos(due_day, limit=500) if r["question_id"].startswith("gone")])
+api.abandon()
+
+# A streak longer than 30 days reads as its real length, and future ticks do not shorten it.
+attempt_repo.clear_history(keep_notes=False)
+for back in range(45):
+    attempt_repo.set_plan_task((_date.today() - _td(days=back)).isoformat(), "t0", True)
+for ahead in range(1, 11):
+    attempt_repo.set_plan_task((_date.today() + _td(days=ahead)).isoformat(), "t0", True)
+check("a 45-day streak shows 45", attempt_repo.plan_streak(_date.today().isoformat()) == 45,
+      str(attempt_repo.plan_streak(_date.today().isoformat())))
+
+# A reopened review quotes the threshold the sitting was routed with.
+step = api.start_test(mode="section", sections=["Math"], threshold=0.9)
+keys = {str(i): q.correct_answer for i, q in enumerate(api.current_plan.questions) if i % 5}
+api.submit({"moduleId": step["moduleId"], "answers": keys, "elapsed": 60})
+sid = api.runner.session_id
+api.abandon()
+note = test_flow.summary_from_history(sid).sections[0].routing_note
+check("a reopened review explains routing against its own threshold", "90%" in note, note)
+
+# Two builds at once make distinct tests instead of crashing on the key.
+pt.delete_all()
+results, errors = [], []
+
+
+def _build():
+    try:
+        results.append(pt.build_more(max_new=1))
+    except Exception as exc:                          # noqa: BLE001
+        errors.append(repr(exc))
+
+
+threads = [_threading.Thread(target=_build) for _ in range(2)]
+[t.start() for t in threads]
+[t.join() for t in threads]
+check("two practice-test builds at once do not crash", not errors, str(errors))
+stored_now = sorted(pt.stored_numbers())
+check("and number what they built 1, 2, ... with no clash",
+      stored_now == list(range(1, len(stored_now) + 1)) and len(stored_now) == sum(r["built"] for r in results),
+      f"{stored_now} from {results}")
+pt.delete_all()
+attempt_repo.clear_history(keep_notes=False)
+
+# ------------------------------------------ 17. THE SERVER DOES NOT LEAK
+# One thread per browser connection, and each opened its own database
+# connections that were never closed: ~5 MB and four file handles per
+# connection, for as long as the app stayed open.
+print("\n[17] browser connections do not leak database connections")
+import http.client  # noqa: E402
+import server as _server  # noqa: E402
+_srv, _url = _server.create_server()
+_server.serve_forever_in_thread(_srv)
+_host, _port = _url.split("//")[1].rstrip("/").split(":")
+
+
+def _hit(n):
+    for _ in range(n):
+        conn = http.client.HTTPConnection(_host, int(_port), timeout=10)
+        conn.request("GET", "/api/bootstrap")
+        conn.getresponse().read()
+        conn.close()
+
+
+try:
+    _hit(3)
+    _time.sleep(0.4)
+    _pools = len(database._ALL_POOLS)
+    _fds = len(os.listdir("/proc/self/fd")) if os.path.isdir("/proc/self/fd") else None
+    _hit(40)
+    _time.sleep(0.8)
+    check("40 connections leave no pools behind", len(database._ALL_POOLS) <= _pools + 1,
+          f"{_pools} -> {len(database._ALL_POOLS)}")
+    if _fds is not None:
+        _after = len(os.listdir("/proc/self/fd"))
+        check("and no open files behind", _after <= _fds + 4, f"{_fds} -> {_after}")
+    def _boom(*_a, **_k):
+        raise RuntimeError("boom")
+    _srv.api.set_plan_task = _boom
+    conn = http.client.HTTPConnection(_host, int(_port), timeout=5)
+    _t0 = _time.time()
+    try:
+        conn.request("POST", "/api/plan/task", body="{\"day\": \"2026-01-01\"}",
+                     headers={"Content-Type": "application/json"})
+        _resp = conn.getresponse()
+        _resp.read()
+        _status = _resp.status
+    except OSError as _exc:                  # a timeout is exactly the bug
+        _status = repr(_exc)
+    check("a POST that fails answers 500 at once instead of hanging",
+          _status == 500 and _time.time() - _t0 < 3, f"{_status} after {_time.time() - _t0:.1f}s")
+    conn.close()
+finally:
+    _srv.shutdown()
+    _srv.server_close()
+
 print(f"\n{'=' * 60}\nPASSED {len(PASS)}   FAILED {len(FAIL)}")
 if FAIL:
     for f in FAIL:

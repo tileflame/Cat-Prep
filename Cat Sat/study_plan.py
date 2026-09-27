@@ -152,11 +152,32 @@ def active_weeks() -> list[dict]:
     return _personal.WEEKS if _personal else []
 
 
+def _tests_from(day: date) -> list[dict] | None:
+    """Every test on or after `day`, counting ones already sat. None without a profile."""
+    try:
+        import plan_builder
+        return plan_builder.tests_as_of(day)
+    except Exception:                     # a broken profile must not brick the app
+        return None
+
+
 def active_test_dates() -> list[dict]:
+    """Every test date, the ones already sat included, so the calendar can mark them."""
     plan = _generated()
     if plan:
-        return [{"date": t["date"], "label": t["label"], "note": ""} for t in plan["tests"]]
+        tests = _tests_from(date.min)
+        return [{"date": t["date"], "label": t["label"], "note": ""}
+                for t in (plan["tests"] if tests is None else tests)]
     return _personal.TEST_DATES if _personal else []
+
+
+def _past_day(day: date) -> dict | None:
+    """A day already gone by, rebuilt as the plan stood that day."""
+    try:
+        import plan_builder
+        return plan_builder.day_plan_as_of(day)
+    except Exception:                     # a broken profile must not brick the app
+        return None
 
 
 def active_day_plan(day: date) -> dict:
@@ -164,6 +185,9 @@ def active_day_plan(day: date) -> dict:
     if plan:
         if day in plan["days"]:
             return plan["days"][day]
+        past = _past_day(day)
+        if past is not None:
+            return past
         return {"headline": "Outside your planned window", "hours": "-",
                 "tasks": [], "week": None, "source": "none"}
     if _personal:
@@ -177,14 +201,20 @@ def active_week_for(day: date) -> dict | None:
         for week in plan["weeks"]:
             if week["start"] <= day <= week["end"]:
                 return week
-        return None
+        past = _past_day(day)
+        return past.get("week") if past else None
     return _personal.week_for(day) if _personal else None
 
 
 def active_next_test(day: date) -> dict | None:
     plan = _generated()
     if plan:
-        upcoming = [t for t in plan["tests"] if t["date"] >= day]
+        tests = plan["tests"]
+        if day < date.today():
+            # Looking back at a missed day: the test that was next THEN, which
+            # may be one you have sat since, so the countdown matches the day.
+            tests = _tests_from(day) or tests
+        upcoming = [t for t in tests if t["date"] >= day]
         if not upcoming:
             return None
         first = upcoming[0]
@@ -200,8 +230,11 @@ def active_days_until_next_test(day: date) -> int | None:
 def active_upcoming(day: date, limit: int = 4) -> list[dict]:
     plan = _generated()
     if plan:
+        tests = plan["tests"]
+        if day < date.today():
+            tests = _tests_from(day) or tests
         return [{"date": t["date"], "label": t["label"], "note": ""}
-                for t in plan["tests"] if t["date"] >= day][:limit]
+                for t in tests if t["date"] >= day][:limit]
     return _personal.upcoming_dates(day, limit) if _personal else []
 
 

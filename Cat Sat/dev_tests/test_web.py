@@ -549,6 +549,86 @@ try:
               page.locator("#nav button").count() > 0,
               page.inner_text("#screen")[:120])
 
+        # ================================================ a missed day
+        # The plan is built forward from today, so going back a day used to
+        # land on "Outside your planned window" with nothing to tick.
+        print("\n[n] a day that has gone by can still be opened and ticked")
+        from datetime import date as _d, timedelta as _t
+        _yday = (_d.today() - _t(days=1)).isoformat()
+        page.click('#nav button:has-text("Plan")')
+        page.wait_for_selector("#screen .tile")
+        page.click('#screen button:has-text("◄")')
+        page.wait_for_timeout(700)
+        _text = page.inner_text("#screen")
+        check("the back arrow opens yesterday with its tasks",
+              "Yesterday's Plan" in _text and page.locator("#screen .tick").count() > 0, _text[:160])
+        check("not the empty outside-the-window state", "Outside your plan" not in _text, _text[:160])
+        page.locator("#screen .tick").first.click()
+        page.wait_for_timeout(400)
+        _back = page.evaluate(f"fetch('/api/plan?day={_yday}').then(r => r.json())")
+        check("a missed day's tick is saved", bool(_back["tasks"]) and _back["tasks"][0]["done"] is True)
+        page.evaluate(f"fetch('/api/plan/task', {{method: 'POST', headers: {{'Content-Type': "
+                      f"'application/json'}}, body: JSON.stringify({{day: '{_yday}', key: 't0', "
+                      f"done: false}})}})")
+
+        # ================================================ the top bar
+        # His bar: a long test label, redos, untagged and the version pill.
+        # The pills used to refuse to shrink, so the TABS gave way: Dashboard
+        # was cut in half and Setup could not be reached.
+        print("\n[n] a long countdown and three pills never cost a tab")
+
+        def _his_pills(route):
+            import json as _json
+            response = route.fetch()
+            data = response.json()
+            data["nextTest"] = dict(data.get("nextTest") or {"date": _yday, "note": ""},
+                                    label="The actial final showdown")
+            data["daysToTest"], data["untagged"] = 7, 44
+            data["redos"] = dict(data.get("redos") or {}, due=30)
+            route.fulfill(response=response, body=_json.dumps(data),
+                          headers={**response.headers, "content-type": "application/json"})
+
+        page.route("**/api/bootstrap*", _his_pills)
+        try:
+            page.goto(URL, wait_until="networkidle")
+            page.wait_for_selector("#screen h1", timeout=5000)
+            page.click('#nav button:has-text("Dashboard")')
+            page.wait_for_timeout(300)
+            for _w in (1400, 1280, 1152, 1024, 900):
+                page.set_viewport_size({"width": _w, "height": 900})
+                page.wait_for_timeout(250)
+                _m = page.evaluate("""() => {
+                  const nav = document.querySelector('#nav'), nr = nav.getBoundingClientRect();
+                  const box = document.querySelector('#topright').getBoundingClientRect();
+                  const cut = [...nav.querySelectorAll('button')].filter(b => {
+                    const r = b.getBoundingClientRect();
+                    return r.left < nr.left - 0.5 || r.right > nr.right + 0.5; }).map(b => b.textContent);
+                  const sliced = [...document.querySelectorAll('#topright > *')].filter(p => {
+                    const r = p.getBoundingClientRect();
+                    if (!r.width || r.top >= box.bottom - 0.5) return false;
+                    return r.left < box.left - 0.5 || r.right > box.right + 0.5; }).map(p => p.textContent);
+                  return { cut, sliced, scrolls: nav.scrollWidth > nav.clientWidth + 1,
+                           page: document.documentElement.scrollWidth > window.innerWidth,
+                           text: document.querySelector('#topright').innerText };
+                }""")
+                if _w >= 1024:
+                    check(f"{_w}px: every tab fully visible", not _m["cut"] and not _m["scrolls"],
+                          str(_m["cut"]))
+                else:
+                    check(f"{_w}px: tabs that do not fit scroll, they do not vanish", _m["scrolls"])
+                check(f"{_w}px: no pill is sliced in half", not _m["sliced"], str(_m["sliced"]))
+                check(f"{_w}px: the page never scrolls sideways", not _m["page"])
+                if _w >= 1280:
+                    check(f"{_w}px: the countdown keeps its place", "showdown" in _m["text"], _m["text"])
+                page.click('#nav button:has-text("Setup")')
+                page.wait_for_timeout(250)
+                check(f"{_w}px: Setup can be reached", "Setup" in page.inner_text("#screen h1"))
+                page.click('#nav button:has-text("Dashboard")')
+                page.wait_for_timeout(200)
+        finally:
+            page.unroute("**/api/bootstrap*")
+            page.set_viewport_size({"width": 1400, "height": 900})
+
         real_errors = [e for e in errors if "favicon" not in e.lower()]
         check("no JavaScript errors anywhere", not real_errors, str(real_errors[:3]))
 
